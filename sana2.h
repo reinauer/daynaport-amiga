@@ -14,6 +14,8 @@
 #include <exec/types.h>
 #endif
 
+#include "timeval_compat.h"
+
 #ifndef EXEC_PORTS_H
 #include <exec/ports.h>
 #endif

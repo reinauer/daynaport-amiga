@@ -4,7 +4,7 @@
  *
  */
  
- 
+#include "timeval_compat.h"
 #include <proto/exec.h>
 #include <exec/execbase.h>
 #include <clib/alib_protos.h>

@@ -14,6 +14,7 @@
 
 #define DEVICE_MAIN
 
+#include "timeval_compat.h"
 #include <proto/exec.h>
 #include <proto/utility.h>
 #include <proto/dos.h>
@@ -840,7 +841,7 @@ void rejectAllPackets(DEVBASEP) {
    D(("Reject all Packets done\n"));
 }
 
-void setTimerDelay(struct timerequest* time_req, ULONG delayMs) {
+void setTimerDelay(TimeRequest_Type* time_req, ULONG delayMs) {
 	ULONG secs = 0;
 	while (delayMs >= 1000) {
 		secs++;
@@ -850,7 +851,7 @@ void setTimerDelay(struct timerequest* time_req, ULONG delayMs) {
 	time_req->tr_time.tv_micro = delayMs * 1000L;
 }
 
-ULONG waitPacketTask(DEVBASEP, struct timerequest* time_req, ULONG timerSignalMask, ULONG delayMs) {
+ULONG waitPacketTask(DEVBASEP, TimeRequest_Type* time_req, ULONG timerSignalMask, ULONG delayMs) {
 	ULONG recv;
 
 	if (!delayMs) return SetSignal(0L, 0L);
@@ -903,10 +904,10 @@ __saveds void frame_proc() {
 	NewList(&timerPort.mp_MsgList);
 
 	LONG errorDevOpen = 0;
-	struct timerequest* time_req = NULL;
+	TimeRequest_Type* time_req = NULL;
 
 	if (((char)timerPort.mp_SigBit)>=0) {
-		time_req = (struct timerequest*) CreateIORequest(&timerPort, sizeof (struct timerequest));
+		time_req = (TimeRequest_Type*) CreateIORequest(&timerPort, sizeof (TimeRequest_Type));
 		if (time_req) errorDevOpen = OpenDevice("timer.device", UNIT_VBLANK, (struct IORequest *)time_req, 0);
 	}
 	
@@ -989,8 +990,8 @@ __saveds void frame_proc() {
 	// Change task priority
 	if (settings->taskPriority != 0) SetTaskPri((struct Task*)db->db_Proc,settings->taskPriority);      
 
-	struct timeval timeLastWifiCheck = {0UL,0UL};
-	struct timeval timeWifiCheck = {0UL,0UL};
+	TimeVal_Type timeLastWifiCheck = {0UL,0UL};
+	TimeVal_Type timeWifiCheck = {0UL,0UL};
 	USHORT lastWifiStatus = 1;    // assume OK, although this should get overwritten straight away
 	USHORT fastPollsLeft = 0;
 

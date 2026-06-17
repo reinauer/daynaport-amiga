@@ -6,6 +6,7 @@
   initialization structures and data
 
 */
+#include "timeval_compat.h"
 #include <proto/exec.h>
 #include <proto/utility.h>
 #include <proto/dos.h>
@@ -72,5 +73,4 @@ const APTR DeviceInitTab[] = {
 	(APTR) &DeviceInitializers,
 	(APTR) DevInit
 };
-
 
