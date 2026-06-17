@@ -840,6 +840,33 @@ void rejectAllPackets(DEVBASEP) {
    D(("Reject all Packets done\n"));
 }
 
+void setTimerDelay(struct timerequest* time_req, ULONG delayMs) {
+	ULONG secs = 0;
+	while (delayMs >= 1000) {
+		secs++;
+		delayMs -= 1000;
+	}
+	time_req->tr_time.tv_secs = secs;
+	time_req->tr_time.tv_micro = delayMs * 1000L;
+}
+
+ULONG waitPacketTask(DEVBASEP, struct timerequest* time_req, ULONG timerSignalMask, ULONG delayMs) {
+	ULONG recv;
+
+	if (!delayMs) return SetSignal(0L, 0L);
+
+	setTimerDelay(time_req, delayMs);
+	SendIO((struct IORequest *)time_req);
+	db->db_timerUsed = TRUE;
+	recv = Wait(SIGBREAKF_CTRL_C | timerSignalMask | SIGBREAKF_CTRL_F);
+	if (!CheckIO((struct IORequest *)time_req)) {
+		AbortIO((struct IORequest *)time_req);
+	}
+	WaitIO((struct IORequest *)time_req);
+	SetSignal(0, timerSignalMask);
+	return recv;
+}
+
 // This runs as a separate task!
 __saveds void frame_proc() {
 	D(("scsidayna_task: frame_proc()\n"));
@@ -965,6 +992,7 @@ __saveds void frame_proc() {
 	struct timeval timeLastWifiCheck = {0UL,0UL};
 	struct timeval timeWifiCheck = {0UL,0UL};
 	USHORT lastWifiStatus = 1;    // assume OK, although this should get overwritten straight away
+	USHORT fastPollsLeft = 0;
 
 	D(("scsidayna_task: starting loop\n"));
 	while (!(recv & SIGBREAKF_CTRL_C) && !db->db_quit) {
@@ -995,7 +1023,8 @@ __saveds void frame_proc() {
 		if (currentWifiState != shouldBeEnabled) {
 			D(("scsidayna_task: Wifi Status Changed\n"));
 			currentWifiState = shouldBeEnabled;
-			SCSIWifi_enable(scsiDevice, shouldBeEnabled); 
+			SCSIWifi_enable(scsiDevice, shouldBeEnabled);
+			if (!shouldBeEnabled) fastPollsLeft = 0;
 			if (!shouldBeEnabled) rejectAllPackets(db);
 			if (shouldBeEnabled) GetSysTime(&db->db_DevStats.LastStart);
 			DoEvent(db, shouldBeEnabled ? S2EVENT_ONLINE : S2EVENT_OFFLINE);
@@ -1150,6 +1179,11 @@ __saveds void frame_proc() {
 			} while ((morePackets) && (!recv));
 
 			// Prevent delaying if there was data incoming
+			if (counter) {
+				fastPollsLeft = settings->fastHold;
+			} else if (fastPollsLeft) {
+				fastPollsLeft--;
+			}
 			if (counter >= 2) morePackets = 1;
 						
 			if (db->db_amigaNetMode) {
@@ -1157,8 +1191,11 @@ __saveds void frame_proc() {
 				counter = 0;
 				UBYTE* dataOut = &packetData[2];  // 2 bytes header at the front
 				USHORT spaceRemaining = db->db_maxPacketsSize - 2;
+				USHORT txBurstLimit = db->db_maxPackets;
 				struct IOSana2Req** pendingSendsSave = pendingSends;
 				struct IOSana2Req *nextwrite;
+				if ((settings->txBurst) && (settings->txBurst < txBurstLimit)) txBurstLimit = settings->txBurst;
+				if (!txBurstLimit) txBurstLimit = 1;
 				// Collect packets until not enough data space or too many
 				ObtainSemaphore(&db->db_WriteListSem);
 				struct IOSana2Req *ior = (struct IOSana2Req *)db->db_WriteList.lh_Head;
@@ -1215,7 +1252,7 @@ __saveds void frame_proc() {
 						spaceRemaining -= sz;
 						counter++;
 					}
-					if (counter>=db->db_maxPackets) break;   // limit packet total
+					if (counter>=txBurstLimit) break;   // limit packet total
 					ior = nextwrite;
 				}
 				ReleaseSemaphore(&db->db_WriteListSem);
@@ -1248,7 +1285,7 @@ __saveds void frame_proc() {
 			} else {
 				// Send packets
 				ObtainSemaphore(&db->db_WriteListSem);
-				counter = 8;   // Max of 8 per loop      
+				counter = settings->txBurst ? settings->txBurst : 8;   // Max per loop
 				for(struct IOSana2Req *ior = (struct IOSana2Req *)db->db_WriteList.lh_Head; (nextwrite = (struct IOSana2Req *) ior->ios2_Req.io_Message.mn_Node.ln_Succ) != NULL; ior = nextwrite ) {
 					ULONG res = write_frame(ior, packetData, scsiDevice, db);
 					Remove((struct Node*)ior);
@@ -1265,35 +1302,16 @@ __saveds void frame_proc() {
 				D(("Terminate Requested"));
 			} else {
 				if (!morePackets) {
-					// we use unit VBLANK therefore the granularity of our wait will be 1/50th (1/60th)
-					// of a second. So essentially this will wait until the next vblank, unless
-					// signaled, which is good enough to yield.
 					if (!settings->aggressive){
-						time_req->tr_time.tv_micro = 1L;
-						SendIO((struct IORequest *)time_req);
-						db->db_timerUsed = TRUE ;
-						recv = Wait(SIGBREAKF_CTRL_C | timerSignalMask | SIGBREAKF_CTRL_F);
-						if (!CheckIO((struct IORequest *)time_req)) { // IO is pending
-							AbortIO((struct IORequest *)time_req);
-						}
-						WaitIO((struct IORequest *)time_req);  // wait until IO fully done
-						SetSignal(0, timerSignalMask); // Very important reset of timer!
+						ULONG pollDelay = fastPollsLeft ? settings->poll0Ms : settings->pollMs;
+						recv = waitPacketTask(db, time_req, timerSignalMask, pollDelay);
 					}
-
 				}
 			}
-			
+
 		} else {
 			// Not enabled? Pause for a decent amount of time
-			time_req->tr_time.tv_micro = 250 * 1000L;
-			SendIO((struct IORequest *)time_req);
-			db->db_timerUsed = TRUE ;
-			recv = Wait(SIGBREAKF_CTRL_C | timerSignalMask | SIGBREAKF_CTRL_F);
-			if (!CheckIO((struct IORequest *)time_req)) { // IO is pending
-				AbortIO((struct IORequest *)time_req);
-			}
-			WaitIO((struct IORequest *)time_req);  // wait until IO fully done
-			SetSignal(0, timerSignalMask); // Very important reset of timer!
+			recv = waitPacketTask(db, time_req, timerSignalMask, 250);
 		}
 
 	}
