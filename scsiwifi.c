@@ -52,8 +52,12 @@
 
 #define INQUIRE_BUFFER_SIZE                 64
 
-#define NUM_TOKENS 10
-static char* CONFIG_TOKENS[NUM_TOKENS] = {"DEVICE","DEVICEID","PRIORITY","MODE","AUTOCONNECT","SSID","KEY","DATASIZE","DEBUG","AGGRESSIVE"};
+#define SCSIDAYNA_DEFAULT_DATASIZE 8192
+#define SCSIDAYNA_MIN_DATASIZE     2048
+#define SCSIDAYNA_MAX_TX_BURST     64
+
+#define NUM_TOKENS 14
+static char* CONFIG_TOKENS[NUM_TOKENS] = {"DEVICE","DEVICEID","PRIORITY","MODE","AUTOCONNECT","SSID","KEY","DATASIZE","DEBUG","AGGRESSIVE","POLLMS","POLL0MS","FASTHOLD","TXBURST"};
 
 // Prepares the SCSI command and resets some of the result values
 #define SCSI_PREPCMD(device, cmd, sub, a, b, c, d) \
@@ -195,6 +199,13 @@ void removeNL(char* text) {
     }
 }
 
+// Clamp settings that can make the packet task spin or under-size buffers
+void normalizeSettings(struct ScsiDaynaSettings* settings) {
+	if (!settings->maxDataSize) settings->maxDataSize = SCSIDAYNA_DEFAULT_DATASIZE;
+	if (settings->maxDataSize < SCSIDAYNA_MIN_DATASIZE) settings->maxDataSize = SCSIDAYNA_MIN_DATASIZE;
+	if (settings->txBurst > SCSIDAYNA_MAX_TX_BURST) settings->txBurst = SCSIDAYNA_MAX_TX_BURST;
+}
+
 // Populates settings with default values
 void SCSIWifi_defaultSettings(struct ScsiDaynaSettings* settings) {
     strcpy(settings->deviceName, "scsi.device");
@@ -205,7 +216,11 @@ void SCSIWifi_defaultSettings(struct ScsiDaynaSettings* settings) {
     strcpy(settings->ssid, "");
     strcpy(settings->key, "");
 	settings->debug = 1;       // Logging by default
-	settings->maxDataSize = 8192;
+	settings->maxDataSize = SCSIDAYNA_DEFAULT_DATASIZE;
+	settings->pollMs = 80;
+	settings->poll0Ms = 20;
+	settings->fastHold = 16;
+	settings->txBurst = 0;
 	settings->aggressive = 0;
 }
 
@@ -247,6 +262,10 @@ LONG SCSIWifi_loadSettings(void *utilityBase, void* dosBase, struct ScsiDaynaSet
 							case 7: settings->maxDataSize = _atous(value); break;
 							case 8: settings->debug = _atos(value) != 0; break;
 							case 9: settings->aggressive = _atos(value) != 0; break;
+							case 10: settings->pollMs = _atous(value); break;
+							case 11: settings->poll0Ms = _atous(value); break;
+							case 12: settings->fastHold = _atous(value); break;
+							case 13: settings->txBurst = _atous(value); break;
                             default: matches--; break;
                         }
                         break;
@@ -256,6 +275,7 @@ LONG SCSIWifi_loadSettings(void *utilityBase, void* dosBase, struct ScsiDaynaSet
         }
         if (matches < 1) SCSIWifi_defaultSettings(settings);
         Close(fh);
+		normalizeSettings(settings);
         return matches > 0;
     }
 
@@ -264,6 +284,7 @@ LONG SCSIWifi_loadSettings(void *utilityBase, void* dosBase, struct ScsiDaynaSet
         if ((ToUpper(settings->deviceName[0]) == 'G') && (ToUpper(settings->deviceName[0]) == 'V') && (ToUpper(settings->deviceName[0]) == 'P')) settings->scsiMode = 2;
     }
 
+	normalizeSettings(settings);
     return 0;
 }
 
@@ -291,6 +312,10 @@ LONG SCSIWifi_saveSettings(struct DosBase *dosBase, struct ScsiDaynaSettings* se
 				case 7:  _ustoa(settings->maxDataSize, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
 				case 8:  _ustoa(settings->debug, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
 				case 9:  _ustoa(settings->aggressive, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
+				case 10: _ustoa(settings->pollMs, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
+				case 11: _ustoa(settings->poll0Ms, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
+				case 12: _ustoa(settings->fastHold, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
+				case 13: _ustoa(settings->txBurst, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
             }
             if (!FPuts(fh, "\n")) good = 0;
         }

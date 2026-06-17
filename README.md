@@ -63,6 +63,10 @@ KEY=
 DATASIZE=
 DEBUG=
 AGGRESSIVE=
+POLLMS=
+POLL0MS=
+FASTHOLD=
+TXBURST=
 ```
 
 where:
@@ -76,6 +80,10 @@ where:
 - DATASIZE With the new Scsi firmware, you can bulk-transfer packet data upto this amount for increased speed (defaults to 8192, some devices might not support different sizes)
 - DEBUG 0/1 Causes a console window to appear to help debug issues with the driver, disable when sorted or it slows things down
 - AGGRESSIVE 0/1 Enables agressive mode, driver run without 1ms wait - experimental - may scale with processor/priority
+- POLLMS Idle receive poll delay in milliseconds when no packet traffic was recently received (defaults to 80)
+- POLL0MS Fast receive poll delay in milliseconds while packet traffic is active (defaults to 20, use 0 to skip the wait)
+- FASTHOLD Number of empty receive polls to keep using POLL0MS after packet traffic stops (defaults to 16)
+- TXBURST Maximum packets to send before giving receive polling another turn (0 uses the firmware/default limit, otherwise 1-64)
 
 ## Mode
 This patches around weirdness in the various SCSI drivers. Mode should be:

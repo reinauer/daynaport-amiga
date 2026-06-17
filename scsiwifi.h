@@ -88,6 +88,11 @@ struct ScsiDaynaSettings {
   char key[64];
   // Max data size in AmigaNET mode
   ULONG maxDataSize;
+  // Packet task tuning
+  USHORT pollMs;
+  USHORT poll0Ms;
+  USHORT fastHold;
+  USHORT txBurst;
   // If debug is enabled - creates a console window and shows the output
   UBYTE debug;
   UBYTE aggressive;

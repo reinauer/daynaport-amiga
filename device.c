@@ -150,6 +150,10 @@ __saveds struct Device *DevInit( ASMR(d0) DEVBASEP ASMREG(d0), ASMR(a0) BPTR seg
 		if ((settings->deviceID<0) || (settings->deviceID>7)) logMessage(db, "	Unit ID: Auto Detect"); else logMessagef(db, "	Unit ID: %ld", settings->deviceID);
 		logMessagef(db, "	Priority: %ld", settings->taskPriority);
 		logMessagef(db, "	Max Transfer Size: %ld", settings->maxDataSize);
+		logMessagef(db, "	Idle Poll Delay: %ld ms", settings->pollMs);
+		logMessagef(db, "	Fast Poll Delay: %ld ms", settings->poll0Ms);
+		logMessagef(db, "	Fast Poll Hold: %ld polls", settings->fastHold);
+		logMessagef(db, "	TX Burst Limit: %ld", settings->txBurst);
 		logMessagef(db, "	Mode: %ld", settings->scsiMode);
 		if (settings->autoConnect) {
 			logMessagef(db, "	Auto Connect Wifi: Yes");
