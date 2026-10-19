@@ -56,8 +56,8 @@
 #define SCSIDAYNA_MIN_DATASIZE     2048
 #define SCSIDAYNA_MAX_TX_BURST     64
 
-#define NUM_TOKENS 14
-static char* CONFIG_TOKENS[NUM_TOKENS] = {"DEVICE","DEVICEID","PRIORITY","MODE","AUTOCONNECT","SSID","KEY","DATASIZE","DEBUG","AGGRESSIVE","POLLMS","POLL0MS","FASTHOLD","TXBURST"};
+#define NUM_TOKENS 15
+static char* CONFIG_TOKENS[NUM_TOKENS] = {"DEVICE","DEVICEID","PRIORITY","MODE","AUTOCONNECT","SSID","KEY","DATASIZE","DEBUG","AGGRESSIVE","POLLMS","POLL0MS","FASTHOLD","TXBURST","MULTICAST"};
 
 // Prepares the SCSI command and resets some of the result values
 #define SCSI_PREPCMD(device, cmd, sub, a, b, c, d) \
@@ -226,6 +226,7 @@ void SCSIWifi_defaultSettings(struct ScsiDaynaSettings* settings) {
 	settings->fastHold = 16;
 	settings->txBurst = 0;
 	settings->aggressive = 0;
+	settings->multicast = 0;
 }
 
 // Loads settings from the ENV, returns 0 if the settings were bad and defaults were setup
@@ -271,6 +272,7 @@ LONG SCSIWifi_loadSettings(void *utilityBase, void* dosBase, struct ScsiDaynaSet
 							case 11: settings->poll0Ms = _atous(value); break;
 							case 12: settings->fastHold = _atous(value); break;
 							case 13: settings->txBurst = _atous(value); break;
+							case 14: settings->multicast = _atos(value) != 0; break;
                         }
                         break;
                     }
@@ -321,6 +323,7 @@ LONG SCSIWifi_saveSettings(struct DosBase *dosBase, struct ScsiDaynaSettings* se
 				case 11: _ustoa(settings->poll0Ms, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
 				case 12: _ustoa(settings->fastHold, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
 				case 13: _ustoa(settings->txBurst, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
+				case 14: _ustoa(settings->multicast, tmp);  if (!FPuts(fh, tmp)) good = 0; break;
             }
             if (!FPuts(fh, "\n")) good = 0;
         }

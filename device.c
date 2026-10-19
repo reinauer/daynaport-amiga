@@ -723,10 +723,12 @@ SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) D
 				}
 			}
 			ReleaseSemaphore(&db->db_mcastSem);
-			/* Not sent to the adapter: the DaynaPORT's "add multicast" (SCSI 0x0D)
-			 * made a BlueSCSI answer with a status gvpscsi.device stops the
-			 * machine for (Unexpected Status $48/$46). The table is kept so the
-			 * stack's add/delete pairs stay consistent. */
+			/* Sent to the adapter (SCSI 0x0D) only with MULTICAST=1 in the prefs:
+			 * a BlueSCSI behind a GVP controller answered it with a status
+			 * gvpscsi.device stops the machine for (Unexpected Status $48/$46),
+			 * and the BlueSCSI passes the groups up without it. */
+			if (!ioreq->ios2_Req.io_Error && db->db_Proc)
+				Signal((struct Task*)db->db_Proc, SIGBREAKF_CTRL_F);
 		}
 		break;
 
@@ -1223,6 +1225,19 @@ SAVEDS void frame_proc(void) {
 		// never veto a pending online request (see above).
 		if (currentWifiState && !lastWifiStatus) shouldBeEnabled = 0;
 
+		/* MULTICAST=1: give the adapter the groups it doesn't have yet */
+		if (settings->multicast && currentWifiState && db->db_mcastSent < db->db_mcastCount) {
+			ObtainSemaphore(&db->db_mcastSem);
+			while (db->db_mcastSent < db->db_mcastCount) {
+				struct SCSIWifi_MACAddress m;
+				memcpy(m.address, db->db_mcast[db->db_mcastSent], 6);
+				if (!SCSIWifi_addMulticastAddress(scsiDevice, &m))
+					logMessage(db, "PacketServer: adapter refused a multicast address");
+				db->db_mcastSent++;
+			}
+			ReleaseSemaphore(&db->db_mcastSem);
+		}
+
 		// Handle state toggle - also goes offline if theres no connections
 		if (currentWifiState != shouldBeEnabled) {
 			D(("scsidayna_task: Wifi Status Changed\n"));
@@ -1230,6 +1245,7 @@ SAVEDS void frame_proc(void) {
 			SCSIWifi_enable(scsiDevice, shouldBeEnabled);
 			if (!shouldBeEnabled) fastPollsLeft = 0;
 			if (!shouldBeEnabled) rejectAllPackets(db);
+			if (shouldBeEnabled) db->db_mcastSent = 0;     /* the adapter starts empty */
 			if (shouldBeEnabled) {
 				GetSysTime(&db->db_DevStats.LastStart);
 				// Radio has just been re-enabled: assume good and restart the
