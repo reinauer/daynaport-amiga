@@ -1,0 +1,59 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # AmigaPorts m68k-amigaos-gcc release used for the build (GCC 16.2)
+  TOOLCHAIN_TAG: v16.2-rc23
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache toolchain
+        id: toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/m68k-amigaos-gcc
+          key: m68k-amigaos-gcc-${{ env.TOOLCHAIN_TAG }}-x86_64-linux
+
+      - name: Download toolchain
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: |
+          version="${TOOLCHAIN_TAG#v}"
+          curl -fsSL -o toolchain.tar.xz \
+            "https://github.com/AmigaPorts/m68k-amigaos-gcc/releases/download/${TOOLCHAIN_TAG}/m68k-amigaos-gcc-${version}-x86_64-linux.tar.xz"
+          mkdir -p ~/m68k-amigaos-gcc
+          tar -xJf toolchain.tar.xz -C ~/m68k-amigaos-gcc --strip-components=1
+          rm toolchain.tar.xz
+
+      - name: Add toolchain to PATH
+        run: |
+          echo "$HOME/m68k-amigaos-gcc/bin" >> "$GITHUB_PATH"
+
+      - name: Show compiler
+        run: m68k-amigaos-gcc --version
+
+      - name: Build
+        run: make
+
+      - name: Build installer archive
+        id: dist
+        run: |
+          make dist
+          echo "name=$(basename dist/*.lha .lha)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload installer archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.dist.outputs.name }}
+          path: dist/*.lha
+          if-no-files-found: error

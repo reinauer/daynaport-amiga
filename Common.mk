@@ -182,6 +182,20 @@ clean:
 install: $(DEVICEID) $(DEVICEID2)
 	copy $(DEVICEID) $(DEVICEID2) DEVS:
 
+# Installer archive: dist/scsidayna-<version>.lha with a scsidayna drawer
+# holding the driver, the Shell tools, example prefs and Install-scsidayna
+DISTNAME  = scsidayna-$(DEVICEVERSION).$(DEVICEREVISION)
+DISTFILES = $(DEVICEID) $(TOOLS) Install-scsidayna scsidayna.prefs \
+            scsidayna-gvp.prefs README.md licence.txt
+LHA      ?= lha
+
+dist: $(DEVICEID) $(TOOLS)
+	rm -rf dist
+	mkdir -p dist/scsidayna
+	cp $(DISTFILES) dist/scsidayna/
+	cd dist && $(LHA) aq $(DISTNAME).lha scsidayna
+	@echo "built dist/$(DISTNAME).lha"
+
 
 #sdnet:	 $(DEVICEID)
 #expnet: $(DEVICEID2)

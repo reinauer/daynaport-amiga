@@ -1,0 +1,33 @@
+; Install-scsidayna - installs scsidayna.device and the daynawifi tool
+;
+; Run it from the drawer it came in:   Execute Install-scsidayna
+;
+;   DEVS:Networks/scsidayna.device   the SANA-II driver
+;   C:daynawifi                      the adapter's Wi-Fi from a Shell
+;   ENVARC:scsidayna.prefs           example settings, only if there are none
+;
+; Your TCP/IP stack's interface setup is left alone: point it at
+; DEVS:Networks/scsidayna.device as for any other SANA-II driver.
+
+If NOT EXISTS DEVS:Networks
+  MakeDir DEVS:Networks
+EndIf
+Copy scsidayna.device DEVS:Networks/ CLONE QUIET
+Echo "Installed DEVS:Networks/scsidayna.device"
+
+Copy daynawifi C: CLONE QUIET
+Protect C:daynawifi +e
+Echo "Installed C:daynawifi"
+
+If EXISTS ENVARC:scsidayna.prefs
+  Echo "Kept your ENVARC:scsidayna.prefs"
+Else
+  Copy scsidayna.prefs ENVARC:scsidayna.prefs CLONE QUIET
+  Echo "Installed ENVARC:scsidayna.prefs - set DEVICE, and SSID/KEY for AUTOCONNECT"
+  Echo "(scsidayna-gvp.prefs in this drawer is an example for GVP controllers)"
+EndIf
+Copy ENVARC:scsidayna.prefs ENV:scsidayna.prefs CLONE QUIET
+
+Echo ""
+Echo "Done. Settings are read when the driver starts; after editing"
+Echo "ENVARC:scsidayna.prefs copy it to ENV: or reboot."
