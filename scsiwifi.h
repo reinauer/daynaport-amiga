@@ -72,6 +72,14 @@ struct STRUCT_PACKED SCSIWifi_NetworkEntry {
 	UBYTE _padding;
 };
 
+// These structs are exchanged with the SCSI firmware and must match its layout
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(struct SCSIWifi_DeviceInfo) == 12, "SCSIWifi_DeviceInfo layout");
+_Static_assert(sizeof(struct SCSIWifi_MACAddress) == 8, "SCSIWifi_MACAddress layout");
+_Static_assert(sizeof(struct SCSIWifi_JoinRequest) == 130, "SCSIWifi_JoinRequest layout");
+_Static_assert(sizeof(struct SCSIWifi_NetworkEntry) == 74, "SCSIWifi_NetworkEntry layout");
+#endif
+
 // Disk settings
 struct ScsiDaynaSettings {
   // SCSI device driver
