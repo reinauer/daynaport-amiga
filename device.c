@@ -345,13 +345,14 @@ SAVEDS LONG DevOpen( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(d0) ULON
 	
 	struct BufferManagement *bm;
 	if ((bm = (struct BufferManagement*)AllocVec(sizeof(struct BufferManagement), MEMF_CLEAR|MEMF_PUBLIC))) {
-		if (!(bm->bm_CopyToBuffer = (BMFunc)GetTagData(S2_CopyToBuff16, 0, (struct TagItem *)ioreq->ios2_BufferManagement))){
-			bm->bm_CopyToBuffer = (BMFunc)GetTagData(S2_CopyToBuff, 0, (struct TagItem *)ioreq->ios2_BufferManagement);
-		}
-
-		if (!(bm->bm_CopyFromBuffer = (BMFunc)GetTagData(S2_CopyFromBuff16, 0, (struct TagItem *)ioreq->ios2_BufferManagement))){
-			bm->bm_CopyFromBuffer = (BMFunc)GetTagData(S2_CopyFromBuff, 0, (struct TagItem *)ioreq->ios2_BufferManagement);
-		}
+		struct TagItem *bufTags = (struct TagItem *)ioreq->ios2_BufferManagement;
+		bm->bm_CopyToBuffer     = (BMFunc)GetTagData(S2_CopyToBuff, 0, bufTags);
+		bm->bm_CopyFromBuffer   = (BMFunc)GetTagData(S2_CopyFromBuff, 0, bufTags);
+		bm->bm_CopyToBuffer16   = (BMFunc)GetTagData(S2_CopyToBuff16, 0, bufTags);
+		bm->bm_CopyFromBuffer16 = (BMFunc)GetTagData(S2_CopyFromBuff16, 0, bufTags);
+		/* the plain variants are mandatory, but don't crash on a stack without them */
+		if (!bm->bm_CopyToBuffer)   bm->bm_CopyToBuffer   = bm->bm_CopyToBuffer16;
+		if (!bm->bm_CopyFromBuffer) bm->bm_CopyFromBuffer = bm->bm_CopyFromBuffer16;
 		
 		ioreq->ios2_BufferManagement = (VOID *)bm;
 		ioreq->ios2_Req.io_Error = 0;
@@ -690,7 +691,7 @@ ULONG write_frame(struct IOSana2Req *req, UBYTE* frame, SCSIWIFIDevice scsiDevic
    struct BufferManagement *bm = (struct BufferManagement *)req->ios2_BufferManagement;
 
 	// Copy the buffer 
-	if (!(*bm->bm_CopyFromBuffer)(frame, req->ios2_Data, req->ios2_DataLength)) {
+	if (!BM_COPYFROM(bm, frame, req->ios2_Data, req->ios2_DataLength)) {
 		req->ios2_Req.io_Error = S2ERR_SOFTWARE;
 		req->ios2_WireError = S2WERR_BUFF_ERROR;
 		DoEvent(db, S2EVENT_ERROR | S2EVENT_BUFF | S2EVENT_SOFTWARE);
@@ -737,7 +738,7 @@ ULONG read_frame(DEVBASEP, struct IOSana2Req *req, UBYTE *frm, USHORT packetSize
 
 	// copy frame to device user (probably tcp/ip system)
 	struct BufferManagement *bm = (struct BufferManagement *)req->ios2_BufferManagement;
-	if (!(*bm->bm_CopyToBuffer)(req->ios2_Data, frame_ptr, datasize)) {
+	if (!BM_COPYTO(bm, req->ios2_Data, frame_ptr, datasize)) {
 		req->ios2_Req.io_Error = S2ERR_SOFTWARE;
 		req->ios2_WireError = S2WERR_BUFF_ERROR;
 		DoEvent(db, S2EVENT_ERROR | S2EVENT_BUFF | S2EVENT_SOFTWARE);
@@ -782,7 +783,7 @@ ULONG receivePacket(DEVBASEP, UBYTE* packet, USHORT packetSize, struct IOSana2Re
 	
 	// copy frame to device user (probably tcp/ip system)
 	struct BufferManagement *bm = (struct BufferManagement *)req->ios2_BufferManagement;
-	if (!(*bm->bm_CopyToBuffer)(req->ios2_Data, frame_ptr, datasize)) {
+	if (!BM_COPYTO(bm, req->ios2_Data, frame_ptr, datasize)) {
 		req->ios2_Req.io_Error = S2ERR_SOFTWARE;
 		req->ios2_WireError = S2WERR_BUFF_ERROR;
 		DoEvent(db, S2EVENT_ERROR | S2EVENT_BUFF | S2EVENT_SOFTWARE);
@@ -1233,7 +1234,7 @@ SAVEDS void frame_proc(void) {
 				    }
 				    // Add the data
 				    struct BufferManagement *bm = (struct BufferManagement *)ior->ios2_BufferManagement;				   
-					if (!(*bm->bm_CopyFromBuffer)(dataOut, ior->ios2_Data, sz)) {
+					if (!BM_COPYFROM(bm, dataOut, ior->ios2_Data, sz)) {
 						ior->ios2_Req.io_Error = S2ERR_SOFTWARE;
 						ior->ios2_WireError = S2WERR_BUFF_ERROR;
 						DoEvent(db, S2EVENT_ERROR | S2EVENT_BUFF | S2EVENT_SOFTWARE);

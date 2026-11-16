@@ -109,11 +109,27 @@ typedef BOOL (*BMFunc)(ASMR(a0) void* a ASMREG(a0),
                        ASMR(a1) void* b ASMREG(a1),
                        ASMR(d0) long c ASMREG(d0));
 
+/*
+  The 16 bit variants may assume the driver-side buffer is word aligned.
+  Packets in an AmigaNET batch can start at odd addresses, so both
+  variants are kept and BM_COPYFROM()/BM_COPYTO() pick the right one.
+*/
 typedef struct BufferManagement
 {
   struct MinNode   bm_Node;
-  BMFunc           bm_CopyFromBuffer;
-  BMFunc           bm_CopyToBuffer;
+  BMFunc           bm_CopyFromBuffer;    /* S2_CopyFromBuff, always set */
+  BMFunc           bm_CopyToBuffer;      /* S2_CopyToBuff, always set */
+  BMFunc           bm_CopyFromBuffer16;  /* S2_CopyFromBuff16 or NULL */
+  BMFunc           bm_CopyToBuffer16;    /* S2_CopyToBuff16 or NULL */
 } BufferManagement;
+
+#define BM_PICK(_fn16_, _fn_, _buf_) \
+	(((_fn16_) && !((ULONG)(_buf_) & 1)) ? (_fn16_) : (_fn_))
+/* copy from the stack's buffer into driver memory at _to_ */
+#define BM_COPYFROM(_bm_, _to_, _from_, _n_) \
+	(*BM_PICK((_bm_)->bm_CopyFromBuffer16, (_bm_)->bm_CopyFromBuffer, (_to_)))((_to_), (_from_), (_n_))
+/* copy from driver memory at _from_ into the stack's buffer */
+#define BM_COPYTO(_bm_, _to_, _from_, _n_) \
+	(*BM_PICK((_bm_)->bm_CopyToBuffer16, (_bm_)->bm_CopyToBuffer, (_from_)))((_to_), (_from_), (_n_))
 
 #endif /* _INC_DEVICE_H */
