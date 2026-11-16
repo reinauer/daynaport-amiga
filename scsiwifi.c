@@ -180,12 +180,16 @@ LONG tokeniseSetting(char* data, char** value) {
     return 0;
 }
 
-// Safe (I hope ;) implementation to prevent buffer overflows
+// Copies a prefs value into dest (maxLength bytes including the terminator).
+// Stops at the end of the line, so a trailing "\n" or "\r\n" from FGets() is
+// dropped, but a last line without a newline keeps all its characters.
 void strcpy_s(char* dest, char* src, USHORT maxLength) {
-    USHORT i = strlen(src);
-    if (i>=maxLength) i = maxLength;
-    memcpy(dest, src, i-1);
-    dest[i-1] = '\0';
+    USHORT i = 0;
+    while (i + 1 < maxLength && src[i] && src[i] != '\n' && src[i] != '\r') {
+        dest[i] = src[i];
+        i++;
+    }
+    dest[i] = '\0';
 }
 
 // Removes any trailing newline characters
