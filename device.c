@@ -310,7 +310,14 @@ __saveds LONG DevOpen( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(d0) UL
 		if (port = CreateMsgPort()) {
 			D(("scsidayna: Starting Server"));
 			db->db_quit = FALSE;
-			if (db->db_Proc = CreateNewProcTags(NP_Entry, frame_proc, NP_Name, frame_proc_name, NP_Priority, 0, TAG_DONE)) {
+			/* Plain tag array: the varargs CreateNewProcTags() stub would use a global DOSBase */
+			struct TagItem procTags[] = {
+				{ NP_Entry,    (ULONG)frame_proc },
+				{ NP_Name,     (ULONG)frame_proc_name },
+				{ NP_Priority, 0 },
+				{ TAG_DONE,    0 }
+			};
+			if ((db->db_Proc = CreateNewProc(procTags))) {
 				init.error = 1;
 				init.db = db;
 				init.msg.mn_Length = sizeof(init);
