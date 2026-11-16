@@ -154,5 +154,4 @@ band steering re-initialised the station every hour; one night it stayed gone). 
 sends the join anyway; on an A1200 the adapter re-associated in 18 s and DHCP came back, where before
 only a power cycle helped.
 
-Build: `vc +aos68k -O2 -+ -sc -cpu=68000 -Indk-fix -I<NDK include> -I. -o daynawifi daynawifi.c scsiwifi.c -lamiga`
-(or `make daynawifi` with the WSL setup in build-wsl.sh).
+Build: `make` builds it together with the driver (GCC by default, or `make compiler_vcc=1` for vbcc).

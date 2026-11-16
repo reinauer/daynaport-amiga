@@ -25,6 +25,9 @@
 #include <stdio.h>
 #include "scsiwifi.h"
 
+#ifdef __GNUC__
+__attribute__((used))
+#endif
 static const char version[] = "$VER: daynawifi 1.0 (24.10.2026)";
 
 struct Library *UtilityBase;
@@ -125,8 +128,9 @@ int main(void)
             SCSIWifi_enable(dev, 1);
             Delay(25);
             memset(&req, 0, sizeof(req));
-            strncpy(req.ssid, s.ssid, sizeof(req.ssid) - 1);
-            strncpy(req.key, s.key, sizeof(req.key) - 1);
+            /* s.ssid/s.key are NUL-terminated within the same 64 bytes */
+            strcpy(req.ssid, s.ssid);
+            strcpy(req.key, s.key);
             printf("joining \"%s\"\n", req.ssid);
             if (!SCSIWifi_joinNetwork(dev, &req))
                 printf("the adapter refused the join request\n");

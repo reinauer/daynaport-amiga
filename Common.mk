@@ -47,6 +47,7 @@ LINK = vlink -bamigahunk -x -s -mrel -Cvbcc -Bstatic -nostdlib -lamiga $(SYSLIB)
 #LINKEXE = vlink -bamigahunk -x -s -mrel -Cvbcc -Bstatic
 LINKEXE = vc +aos68k
 #LINK = $(CCX) -nostdlib
+TOOLLIBS = -lamiga
 CFLAGS  = -O2 -+ -sc -cpu=$(CPU)
 CFLAGS2 = -Os -+ -sc -c99 -cpu=$(CPU2)
 ifeq ($(debug),1)
@@ -64,6 +65,8 @@ else
 CCX  = m68k-amigaos-gcc
 LINK = $(CCX) -m$(CPU) -noixemul -nostartfiles -s
 LINKEXE = $(CCX) -s -noixemul
+# Shell tools use the normal libnix startup code
+TOOLLDFLAGS = -s
 CFLAGS  = -O2 -m$(CPU) -noixemul -fomit-frame-pointer -Wall
 CFLAGS2 = -O2 -m$(CPU2) -noixemul -fomit-frame-pointer -Wall
 ifeq ($(debug),1)
@@ -162,11 +165,11 @@ OBJECTS2 = $(patsubst %.o,%.2o,$(OBJECTS))
 #
 ###############################################################################
 
-all:	$(DEVICEID) $(DEVICEID2) $(TESTTOOL) $(TESTTOOL2)
+all:	$(DEVICEID) $(DEVICEID2) $(TESTTOOL) $(TESTTOOL2) $(TOOLS)
 
 clean:
 	rm -f $(OBJECTS) $(OBJECTS2)
-	rm -f $(DEVICEID) $(DEVICEID2) $(EXTRACLEAN)
+	rm -f $(DEVICEID) $(DEVICEID2) $(TOOLS) $(EXTRACLEAN)
 
 # not for cross compile :-)
 install: $(DEVICEID) $(DEVICEID2)
@@ -185,6 +188,10 @@ $(DEVICEID) : $(OBJECTS)
 
 %.o : %.c
 	$(CCX) -c $(CFLAGS) $(DEFINES) $(IPATH) -o $@ $<
+
+# Shell tool sharing the driver's SCSI code
+daynawifi: daynawifi.c scsiwifi.c scsiwifi.h
+	$(CCX) $(CFLAGS) $(IPATH) $(TOOLLDFLAGS) -o $@ daynawifi.c scsiwifi.c $(TOOLLIBS)
 
 
 # secondary ruleset (used for expnet, will be ignored if DEVICEID2 is empty)

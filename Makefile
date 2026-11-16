@@ -37,11 +37,13 @@ CPU = 68000
 DEVICEID2=
 
 ###############################################################################
+# Shell tools, built with the same compiler (see Common.mk)
+#
+###############################################################################
+TOOLS = daynawifi
+
+###############################################################################
 # import generic ruleset
 # 
 ###############################################################################
 include Common.mk
-
-# the Shell tool (vbcc, same flags as the device): make daynawifi
-daynawifi: daynawifi.c scsiwifi.c scsiwifi.h
-	vc +aos68k -O2 -+ -sc -cpu=$(CPU) $(IPATH) -I. -o $@ daynawifi.c scsiwifi.c -lamiga
