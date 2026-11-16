@@ -234,7 +234,7 @@ LONG SCSIWifi_loadSettings(void *utilityBase, void* dosBase, struct ScsiDaynaSet
     USHORT modeConfigured = 0;
     SCSIWifi_defaultSettings(settings);
     BPTR fh;
-    if (fh = Open("ENV:scsidayna.prefs",MODE_OLDFILE)) {
+    if ((fh = Open("ENV:scsidayna.prefs",MODE_OLDFILE))) {
         char buffer[128];
 		settings->debug = 0;    // If file exists turn off logging by default
         USHORT matches = 0;
@@ -294,7 +294,7 @@ LONG SCSIWifi_saveSettings(struct DosBase *dosBase, struct ScsiDaynaSettings* se
     LSCSIDevice dev = &devTmp;
     devTmp.sc_dosBase = dosBase;
     BPTR fh;
-    if (fh = Open(saveToENV ? "ENV:scsidayna.prefs" : "ENVARC:scsidayna.prefs",MODE_NEWFILE)) {
+    if ((fh = Open(saveToENV ? "ENV:scsidayna.prefs" : "ENVARC:scsidayna.prefs",MODE_NEWFILE))) {
         // Save each setting in tern
         USHORT good = 1;
         char tmp[20];  // temp buffer
@@ -330,7 +330,7 @@ struct IORequest* _CreateExtIO(LSCSIDevice dev, struct MsgPort *replyPort, long 
     struct IORequest *io = NULL;
 
     if (replyPort) {
-        if (io = AllocMem(size, MEMF_PUBLIC | MEMF_CLEAR)) {
+        if ((io = AllocMem(size, MEMF_PUBLIC | MEMF_CLEAR))) {
             io->io_Message.mn_ReplyPort = replyPort;
             io->io_Message.mn_Length = size;
             io->io_Message.mn_Node.ln_Type = NT_REPLYMSG;
@@ -348,7 +348,7 @@ void _DeleteExtIO(LSCSIDevice dev, struct IORequest *io) {
     }
 }
 
-struct MsgPort *_CreatePort(LSCSIDevice dev, UBYTE *name, LONG pri) {
+struct MsgPort *_CreatePort(LSCSIDevice dev, char *name, LONG pri) {
     LONG sigBit;
     struct MsgPort *mp;
 

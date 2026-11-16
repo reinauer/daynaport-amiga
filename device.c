@@ -308,7 +308,7 @@ SAVEDS LONG DevOpen( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(d0) ULON
 		struct ProcInit init;
 		struct MsgPort *port;
 
-		if (port = CreateMsgPort()) {
+		if ((port = CreateMsgPort())) {
 			D(("scsidayna: Starting Server"));
 			db->db_quit = FALSE;
 			/* Plain tag array: the varargs CreateNewProcTags() stub would use a global DOSBase */
@@ -476,13 +476,8 @@ SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) D
 		break;
 
 	case S2_BROADCAST:   
-		if (ioreq->ios2_DstAddr) {
-			memset(ioreq->ios2_DstAddr, 0xFF, HW_ADDRFIELDSIZE);
-		} else {
-			D(("bcast: invalid dst addr\n"));
-			ioreq->ios2_Req.io_Error = S2ERR_BAD_ADDRESS;
-			ioreq->ios2_WireError = S2WERR_BUFF_ERROR;
-		}
+		/* ios2_DstAddr is an array inside the request, it can't be NULL */
+		memset(ioreq->ios2_DstAddr, 0xFF, HW_ADDRFIELDSIZE);
 		// fall through!	
 	case CMD_WRITE: 
 		D(("W"));
@@ -719,9 +714,8 @@ ULONG write_frame(struct IOSana2Req *req, UBYTE* frame, SCSIWIFIDevice scsiDevic
 
 ULONG read_frame(DEVBASEP, struct IOSana2Req *req, UBYTE *frm, USHORT packetSize) {
 	ULONG datasize;
-	BYTE *frame_ptr;
+	UBYTE *frame_ptr;
 	BOOL broadcast;
-	ULONG res = 0;
 
 	// This length includes 4 bytes for the CRC at the end, but we dont need that
 	ULONG sz   = ((ULONG)frm[0]<<8)|((ULONG)frm[1]);
@@ -770,9 +764,8 @@ ULONG read_frame(DEVBASEP, struct IOSana2Req *req, UBYTE *frm, USHORT packetSize
 // Receive a packet
 ULONG receivePacket(DEVBASEP, UBYTE* packet, USHORT packetSize, struct IOSana2Req *req) {	
 	ULONG datasize;
-	BYTE *frame_ptr;
+	UBYTE *frame_ptr;
 	BOOL broadcast;
-	ULONG res = 0;
 
 	req->ios2_PacketType = ((USHORT)packet[12]<<8)|((USHORT)packet[13]);
 
@@ -998,8 +991,8 @@ SAVEDS void frame_proc(void) {
 	// Change task priority
 	if (settings->taskPriority != 0) SetTaskPri((struct Task*)db->db_Proc,settings->taskPriority);      
 
-	TimeVal_Type timeLastWifiCheck = {0UL,0UL};
-	TimeVal_Type timeWifiCheck = {0UL,0UL};
+	TimeVal_Type timeLastWifiCheck = {0};
+	TimeVal_Type timeWifiCheck = {0};
 	USHORT lastWifiStatus = 1;    // assume OK, although this should get overwritten straight away
 	USHORT fastPollsLeft = 0;
 
@@ -1296,7 +1289,7 @@ SAVEDS void frame_proc(void) {
 				ObtainSemaphore(&db->db_WriteListSem);
 				counter = settings->txBurst ? settings->txBurst : 8;   // Max per loop
 				for(struct IOSana2Req *ior = (struct IOSana2Req *)db->db_WriteList.lh_Head; (nextwrite = (struct IOSana2Req *) ior->ios2_Req.io_Message.mn_Node.ln_Succ) != NULL; ior = nextwrite ) {
-					ULONG res = write_frame(ior, packetData, scsiDevice, db);
+					write_frame(ior, packetData, scsiDevice, db);
 					Remove((struct Node*)ior);
 					DevTermIO(db, (struct IORequest *)ior);
 					morePackets=1;
