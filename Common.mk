@@ -47,7 +47,6 @@ LINK = vlink -bamigahunk -x -s -mrel -Cvbcc -Bstatic -nostdlib -lamiga $(SYSLIB)
 #LINKEXE = vlink -bamigahunk -x -s -mrel -Cvbcc -Bstatic
 LINKEXE = vc +aos68k
 #LINK = $(CCX) -nostdlib
-TOOLLIBS = -lamiga
 CFLAGS  = -O2 -+ -sc -cpu=$(CPU)
 CFLAGS2 = -Os -+ -sc -c99 -cpu=$(CPU2)
 ifeq ($(debug),1)
@@ -59,14 +58,21 @@ endif
 else
 
 # GCC (tested with m68k-amigaos-gcc 16.2)
-# No startup code: the device is entered through its ROMTag. libnix only
-# supplies freestanding string helpers, libgcc the 68000 mul/div helpers.
-# Library bases live in the device base, so no global SysBase is needed.
+# Fully freestanding: no libnix, no amiga.lib, no startup code. The device
+# is entered through its ROMTag and keeps its library bases in the device
+# base; the Shell tools start through toolstart.o. The few C library
+# routines the code needs come from libgccsupport.a (hand-optimized 68000
+# versions, one object per function so only used ones are linked), plus
+# libgcc for compiler support routines. A missing function is a link
+# error rather than a silent libnix dependency.
+# GCC builtins stay enabled (no -ffreestanding), so fixed-size copies and
+# fills are still inlined.
 CCX  = m68k-amigaos-gcc
-LINK = $(CCX) -m$(CPU) -noixemul -nostartfiles -s
-LINKEXE = $(CCX) -s -noixemul
-# Shell tools use the normal libnix startup code
-TOOLLDFLAGS = -s
+AR   = m68k-amigaos-ar
+LINK = $(CCX) -m$(CPU) -nostdlib -nostartfiles -s
+LINKEXE = $(LINK)
+SUPPORTLIB = libgccsupport.a
+RUNTIMELIBS = $(SUPPORTLIB) -lgcc
 CFLAGS  = -O2 -m$(CPU) -noixemul -fomit-frame-pointer -Wall
 CFLAGS2 = -O2 -m$(CPU2) -noixemul -fomit-frame-pointer -Wall
 ifeq ($(debug),1)
@@ -151,10 +157,10 @@ LDFLAGS =
 # ASM based alternative to deviceheader.o would be romtag.o
 
 OBJECTS = deviceheader.o deviceinit.o device.o scsiwifi.o
-ifneq ($(compiler_vcc),1)
-OBJECTS += gccsupport.o
-endif
 OBJECTS += $(ASMOBJECTS)
+
+# freestanding C library subset for the GCC build
+SUPPORTOBJS = $(patsubst %.c,%.o,$(wildcard gccsupport/*.c))
 
 # used for secondary build
 OBJECTS2 = $(patsubst %.o,%.2o,$(OBJECTS))
@@ -168,7 +174,8 @@ OBJECTS2 = $(patsubst %.o,%.2o,$(OBJECTS))
 all:	$(DEVICEID) $(DEVICEID2) $(TESTTOOL) $(TESTTOOL2) $(TOOLS)
 
 clean:
-	rm -f $(OBJECTS) $(OBJECTS2)
+	rm -f $(OBJECTS) $(OBJECTS2) $(SUPPORTOBJS) libgccsupport.a
+	rm -f toolstart.o daynawifi.o
 	rm -f $(DEVICEID) $(DEVICEID2) $(TOOLS) $(EXTRACLEAN)
 
 # not for cross compile :-)
@@ -179,8 +186,12 @@ install: $(DEVICEID) $(DEVICEID2)
 #sdnet:	 $(DEVICEID)
 #expnet: $(DEVICEID2)
 
-$(DEVICEID) : $(OBJECTS)
-	$(LINK) $(LDFLAGS) -o $@ $(OBJECTS) $(LINKLIBS) $(LINKOPTS)
+$(DEVICEID) : $(OBJECTS) $(SUPPORTLIB)
+	$(LINK) $(LDFLAGS) -o $@ $(OBJECTS) $(LINKLIBS) $(LINKOPTS) $(RUNTIMELIBS)
+
+libgccsupport.a: $(SUPPORTOBJS)
+	rm -f $@
+	$(AR) rcs $@ $(SUPPORTOBJS)
 
 
 # separate ruleset for each subdirectory, ./src overrides all other paths for priority
@@ -190,13 +201,21 @@ $(DEVICEID) : $(OBJECTS)
 	$(CCX) -c $(CFLAGS) $(DEFINES) $(IPATH) -o $@ $<
 
 # Shell tool sharing the driver's SCSI code
+ifeq ($(compiler_vcc),1)
 daynawifi: daynawifi.c scsiwifi.c scsiwifi.h
-	$(CCX) $(CFLAGS) $(IPATH) $(TOOLLDFLAGS) -o $@ daynawifi.c scsiwifi.c $(TOOLLIBS)
+	$(CCX) $(CFLAGS) $(IPATH) -o $@ daynawifi.c scsiwifi.c -lamiga
+else
+# toolstart.o must come first: its jump is the program entry point
+daynawifi: toolstart.o daynawifi.o scsiwifi.o $(SUPPORTLIB)
+	$(LINK) $(LDFLAGS) -o $@ toolstart.o daynawifi.o scsiwifi.o $(RUNTIMELIBS)
+
+toolstart.o: CFLAGS += -fno-toplevel-reorder
+endif
 
 
 # secondary ruleset (used for expnet, will be ignored if DEVICEID2 is empty)
-$(DEVICEID2) : $(OBJECTS2)
-	$(LINK) $(LDFLAGS) -o $@ $(OBJECTS2) $(LINKLIBS)
+$(DEVICEID2) : $(OBJECTS2) $(SUPPORTLIB)
+	$(LINK) $(LDFLAGS) -o $@ $(OBJECTS2) $(LINKLIBS) $(RUNTIMELIBS)
 
 %.2o : %.c
 	$(CCX) -c $(CFLAGS2) $(DEFINES2) $(IPATH) $< -o $@

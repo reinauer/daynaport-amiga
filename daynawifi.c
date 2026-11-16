@@ -21,8 +21,8 @@
 #include <proto/dos.h>
 #include <proto/utility.h>
 #include <dos/rdargs.h>
+#include <stdarg.h>
 #include <string.h>
-#include <stdio.h>
 #include "scsiwifi.h"
 
 #ifdef __GNUC__
@@ -32,18 +32,36 @@ static const char version[] = "$VER: daynawifi 1.0 (24.10.2026)";
 
 struct Library *UtilityBase;
 
+/* Printf() with a plain char format; numbers must be passed as LONG (%ld) */
+static void say(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    VPrintf((CONST_STRPTR)fmt, (APTR)ap);
+    va_end(ap);
+}
+
+/* bounded copy of a command line argument, always NUL-terminated */
+static void copyArg(char *dest, const char *src, ULONG size)
+{
+    ULONG i;
+    for (i = 0; i + 1 < size && src[i]; i++)
+        dest[i] = src[i];
+    dest[i] = '\0';
+}
+
 static void show(SCSIWIFIDevice dev)
 {
     struct SCSIWifi_NetworkEntry net;
     struct SCSIWifi_MACAddress mac;
     memset(&net, 0, sizeof(net));
     if (SCSIWifi_getNetwork(dev, &net) && net.rssi)
-        printf("joined to \"%s\", signal %d dB, channel %d\n", net.ssid, (int)net.rssi, (int)net.channel);
+        say("joined to \"%s\", signal %ld dB, channel %ld\n", (LONG)net.ssid, (LONG)net.rssi, (LONG)net.channel);
     else
-        printf("not joined to any network\n");
+        PutStr("not joined to any network\n");
     if (SCSIWifi_getMACAddress(dev, &mac) && mac.valid)
-        printf("adapter MAC %02x:%02x:%02x:%02x:%02x:%02x\n", mac.address[0], mac.address[1], mac.address[2],
-               mac.address[3], mac.address[4], mac.address[5]);
+        say("adapter MAC %02lx:%02lx:%02lx:%02lx:%02lx:%02lx\n", (LONG)mac.address[0], (LONG)mac.address[1],
+               (LONG)mac.address[2], (LONG)mac.address[3], (LONG)mac.address[4], (LONG)mac.address[5]);
 }
 
 static int scan(SCSIWIFIDevice dev)
@@ -51,7 +69,7 @@ static int scan(SCSIWIFIDevice dev)
     enum SCSIWifi_ScanStatus st;
     struct SCSIWifi_ScanResults *res;
     int i, t;
-    if (!SCSIWifi_scan(dev, &st)) { printf("the adapter refused to scan\n"); return 10; }
+    if (!SCSIWifi_scan(dev, &st)) { PutStr("the adapter refused to scan\n"); return 10; }
     for (t = 0; t < 30; t++) {
         Delay(25);
         if (!SCSIWifi_scanComplete(dev, &st) || st != swssBusy) break;
@@ -59,12 +77,12 @@ static int scan(SCSIWIFIDevice dev)
     res = AllocVec(sizeof(*res), MEMF_PUBLIC | MEMF_CLEAR);
     if (!res) return 20;
     if (SCSIWifi_getScanResults(dev, res)) {
-        printf("%d network%s:\n", (int)res->count, res->count == 1 ? "" : "s");
+        say("%ld network%s:\n", (LONG)res->count, (LONG)(res->count == 1 ? "" : "s"));
         for (i = 0; i < res->count && i < SCSIWIFI_MAX_NETWORK_COUNT; i++)
-            printf("  %-32s %4d dB  ch %d\n", res->networks[i].ssid, (int)res->networks[i].rssi,
-                   (int)res->networks[i].channel);
+            say("  %-32s %4ld dB  ch %ld\n", (LONG)res->networks[i].ssid, (LONG)res->networks[i].rssi,
+                   (LONG)res->networks[i].channel);
     } else
-        printf("no scan results\n");
+        PutStr("no scan results\n");
     FreeVec(res);
     return 0;
 }
@@ -86,9 +104,9 @@ int main(void)
 
     SCSIWifi_defaultSettings(&s);
     if (!SCSIWifi_loadSettings((void *)UtilityBase, (void *)DOSBase, &s))
-        printf("no ENV:scsidayna.prefs - using the defaults (%s)\n", s.deviceName);
-    if (args[2]) { strncpy(s.ssid, (char *)args[2], sizeof(s.ssid) - 1); s.ssid[sizeof(s.ssid) - 1] = 0; }
-    if (args[3]) { strncpy(s.key, (char *)args[3], sizeof(s.key) - 1); s.key[sizeof(s.key) - 1] = 0; }
+        say("no ENV:scsidayna.prefs - using the defaults (%s)\n", (LONG)s.deviceName);
+    if (args[2]) copyArg(s.ssid, (const char *)args[2], sizeof(s.ssid));
+    if (args[3]) copyArg(s.key, (const char *)args[3], sizeof(s.key));
 
     memset(&od, 0, sizeof(od));
     od.sysBase = SysBase;
@@ -106,10 +124,10 @@ int main(void)
             od.deviceID = id;
             dev = SCSIWifi_open(&od, &err);
         }
-        if (dev) printf("adapter on %s unit %d\n", s.deviceName, (int)od.deviceID);
+        if (dev) say("adapter on %s unit %ld\n", (LONG)s.deviceName, (LONG)od.deviceID);
     }
     if (!dev) {
-        printf("no DaynaPORT Wi-Fi adapter on %s (unit %d): open result %d\n", s.deviceName, (int)s.deviceID, (int)err);
+        say("no DaynaPORT Wi-Fi adapter on %s (unit %ld): open result %ld\n", (LONG)s.deviceName, (LONG)s.deviceID, (LONG)err);
         rc = 10;
     } else if (args[1]) {
         rc = scan(dev);
@@ -118,10 +136,10 @@ int main(void)
         struct SCSIWifi_NetworkEntry net;
         int t;
         if (!s.ssid[0]) {
-            printf("no SSID: put SSID= and KEY= in ENV:scsidayna.prefs, or give them here\n");
+            PutStr("no SSID: put SSID= and KEY= in ENV:scsidayna.prefs, or give them here\n");
             rc = 10;
         } else {
-            printf("before: "); show(dev);
+            PutStr("before: "); show(dev);
             /* enable off/on resets the adapter's packet buffer (scsiwifi.h) */
             SCSIWifi_enable(dev, 0);
             Delay(25);
@@ -131,19 +149,19 @@ int main(void)
             /* s.ssid/s.key are NUL-terminated within the same 64 bytes */
             strcpy(req.ssid, s.ssid);
             strcpy(req.key, s.key);
-            printf("joining \"%s\"\n", req.ssid);
+            say("joining \"%s\"\n", (LONG)req.ssid);
             if (!SCSIWifi_joinNetwork(dev, &req))
-                printf("the adapter refused the join request\n");
+                PutStr("the adapter refused the join request\n");
             for (t = 0, rc = 5; t < 40; t++) {         /* up to 40 s */
                 Delay(50);
                 memset(&net, 0, sizeof(net));
                 if (SCSIWifi_getNetwork(dev, &net) && net.rssi && !strcmp(net.ssid, req.ssid)) {
-                    printf("joined after %d s: ", t + 1); show(dev);
+                    say("joined after %ld s: ", (LONG)(t + 1)); show(dev);
                     rc = 0;
                     break;
                 }
             }
-            if (rc) printf("not joined after 40 s\n");
+            if (rc) PutStr("not joined after 40 s\n");
         }
     } else
         show(dev);

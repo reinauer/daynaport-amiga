@@ -1,14 +1,9 @@
 /*
-  gccsupport.c
-
-  Freestanding helpers for the GCC build. The device has no startup code
-  and keeps its library bases in the device base, so it must not pull in
-  libnix functions that reach for a global SysBase (libnix memcpy() calls
-  exec CopyMem()).
+  memcpy.c - part of libgccsupport.a, the freestanding helpers for the GCC
+  build (see Common.mk). No libnix: its memcpy() calls exec
+  CopyMem() through a global SysBase, which the device does not have.
 */
 #ifdef __GNUC__
-
-#include <stddef.h>
 
 /*
   void *memcpy(void *dest, const void *src, size_t n)
