@@ -52,10 +52,11 @@ const UWORD dev_supportedcmds[] = { NSCMD_DEVICEQUERY, CMD_READ, CMD_WRITE, /*S2
 
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-__saveds void frame_proc();
+SAVEDS void frame_proc(void);
 char *frame_proc_name = "AmigaNetPacketScheduler";
 
 static UBYTE HW_MAC[] = {0x00,0x00,0x00,0x00,0x00,0x00};
@@ -106,7 +107,7 @@ void logMessagef(struct devbase* db, const char *messageFormat, ...) {
 }
 
 // Simple device init that saves all the real errors until later
-__saveds struct Device *DevInit( ASMR(d0) DEVBASEP ASMREG(d0), ASMR(a0) BPTR seglist ASMREG(a0), ASMR(a6) struct Library *_SysBase  ASMREG(a6) ) {	
+SAVEDS struct Device *DevInit( ASMR(d0) DEVBASEP ASMREG(d0), ASMR(a0) BPTR seglist ASMREG(a0), ASMR(a6) struct Library *_SysBase  ASMREG(a6) ) {	
 	db->db_SysBase = _SysBase;
 	db->db_SegList = seglist;
 	db->db_DOSBase = NULL;
@@ -181,7 +182,7 @@ LONG returnError(struct devbase* db, struct IOSana2Req *ioreq, LONG errorCode) {
 }
 
 // Device open!
-__saveds LONG DevOpen( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(d0) ULONG unit ASMREG(d0), ASMR(d1) ULONG flags ASMREG(d1), ASMR(a6) DEVBASEP ASMREG(a6) ) {		
+SAVEDS LONG DevOpen( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(d0) ULONG unit ASMREG(d0), ASMR(d1) ULONG flags ASMREG(d1), ASMR(a6) DEVBASEP ASMREG(a6) ) {		
 	struct ScsiDaynaSettings* settings = (struct ScsiDaynaSettings*)db->db_scsiSettings;
 	db->db_decrementCountOnFail = 0;		
 			
@@ -368,7 +369,7 @@ __saveds LONG DevOpen( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(d0) UL
 	return 0;
 }
 
-__saveds BPTR DevClose( ASMR(a1) struct IORequest *ioreq ASMREG(a1), ASMR(a6) DEVBASEP ASMREG(a6) ) {
+SAVEDS BPTR DevClose( ASMR(a1) struct IORequest *ioreq ASMREG(a1), ASMR(a6) DEVBASEP ASMREG(a6) ) {
 	BPTR  ret = (0);
 
 	D(("scsidayna: DevClose open count %ld\n",db->db_Lib.lib_OpenCnt));
@@ -395,7 +396,7 @@ __saveds BPTR DevClose( ASMR(a1) struct IORequest *ioreq ASMREG(a1), ASMR(a6) DE
 	return ret;
 }
 
-__saveds BPTR DevExpunge( ASMR(a6) DEVBASEP ASMREG(a6) ) {
+SAVEDS BPTR DevExpunge( ASMR(a6) DEVBASEP ASMREG(a6) ) {
 	BPTR seglist = db->db_SegList;
 
 	if( db->db_Lib.lib_OpenCnt ) {
@@ -412,7 +413,7 @@ __saveds BPTR DevExpunge( ASMR(a6) DEVBASEP ASMREG(a6) ) {
 	return seglist;
 }
 
-__saveds VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) DEVBASEP ASMREG(a6) ) {    
+SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) DEVBASEP ASMREG(a6) ) {    
 	ioreq->ios2_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
 	ioreq->ios2_Req.io_Error = S2ERR_NO_ERROR;
 	if (ioreq->ios2_Req.io_Command != S2_ONEVENT){
@@ -634,7 +635,7 @@ void DoEvent(DEVBASEP, long event) {
 	ReleaseSemaphore(&db->db_EventListSem );
 }
 
-__saveds LONG DevAbortIO( ASMR(a1) struct IORequest *ioreq ASMREG(a1), ASMR(a6) DEVBASEP ASMREG(a6) ) {
+SAVEDS LONG DevAbortIO( ASMR(a1) struct IORequest *ioreq ASMREG(a1), ASMR(a6) DEVBASEP ASMREG(a6) ) {
 	LONG   ret = 0;
 	struct IOSana2Req* ios2 = (struct IOSana2Req*)ioreq;
 
@@ -876,7 +877,7 @@ ULONG waitPacketTask(DEVBASEP, TimeRequest_Type* time_req, ULONG timerSignalMask
 }
 
 // This runs as a separate task!
-__saveds void frame_proc() {
+SAVEDS void frame_proc(void) {
 	D(("scsidayna_task: frame_proc()\n"));
 
 	struct ProcInit* init; 

@@ -8,7 +8,7 @@
 #       "make clean" in between
 #
 # tools required:
-#  GNU Make, either VBCC or GCC for AmigaOS/68k, VASM
+#  GNU Make, either GCC (m68k-amigaos-gcc, default) or VBCC for AmigaOS/68k
 #  recent sana2.h , e.g. from RoadShow SDK
 #
 # porting:
@@ -20,17 +20,19 @@
 ###############################################################################
 # debug = 1 will include string debugging for terminal/sushi/sashimi
 debug = 0
-# compiler_vcc = 1 will trigger VBCC, else GCC
-compiler_vcc = 1
+# compiler_vcc = 1 will trigger VBCC, else GCC (default)
+compiler_vcc ?= 0
 
 ###############################################################################
 # prefix for system includes (ASM)
 # native AmigaOS compilation: set PREFX=GG: or PREFX=ADE:, depending on toolchain
 ###############################################################################
+ifeq ($(compiler_vcc),1)
 PREFX  = $(VBCC)/targets/m68k-amigaos
 #PREFX = gg:
 SYSINC ?= "-I$(PREFX)/include" 
 SYSLIB ?= "-L$(PREFX)/lib"
+endif
 
 ###############################################################################
 #
@@ -55,12 +57,19 @@ endif
 
 else
 
-# GCC
+# GCC (tested with m68k-amigaos-gcc 16.2)
+# No startup code: the device is entered through its ROMTag. libnix only
+# supplies freestanding string helpers, libgcc the 68000 mul/div helpers.
+# Library bases live in the device base, so no global SysBase is needed.
 CCX  = m68k-amigaos-gcc
-LINK = $(CCX) -nostartfiles -s
+LINK = $(CCX) -m$(CPU) -noixemul -nostartfiles -s
 LINKEXE = $(CCX) -s -noixemul
-CFLAGS  = -O3 -s -m$(CPU) -Wall -noixemul -mregparm=4 -fomit-frame-pointer -msoft-float -noixemul
-CFLAGS2 = -O3 -s -m$(CPU2) -Wall -noixemul -mregparm=4 -fomit-frame-pointer -msoft-float -noixemul
+CFLAGS  = -O2 -m$(CPU) -noixemul -fomit-frame-pointer -Wall
+CFLAGS2 = -O2 -m$(CPU2) -noixemul -fomit-frame-pointer -Wall
+ifeq ($(debug),1)
+CFLAGS  = -O0 -m$(CPU) -noixemul -Wall
+CFLAGS2 = -O0 -m$(CPU2) -noixemul -Wall
+endif
 
 endif
 
@@ -77,7 +86,10 @@ VASMFORMAT2 = -m$(CPU2) -Fhunk -nowarn=2064 -quiet $(SYSINC)
 #
 ###############################################################################
 
-IPATH = -I/opt/amiga/NDK3.2/Include_H
+# GCC ships its own NDK headers; VBCC needs them pointed out
+ifeq ($(compiler_vcc),1)
+IPATH ?= -I/opt/amiga/NDK3.2/Include_H
+endif
 
 ###############################################################################
 #
@@ -124,8 +136,8 @@ endif
 #
 ###############################################################################
 
-CFLAGS  += -I. -I$(SUBDIR)
-CFLAGS2 += -I. -I$(SUBDIR)
+CFLAGS  += -I. $(if $(SUBDIR),-I$(SUBDIR))
+CFLAGS2 += -I. $(if $(SUBDIR),-I$(SUBDIR))
 LDFLAGS =
 
 ###############################################################################
@@ -136,6 +148,9 @@ LDFLAGS =
 # ASM based alternative to deviceheader.o would be romtag.o
 
 OBJECTS = deviceheader.o deviceinit.o device.o scsiwifi.o
+ifneq ($(compiler_vcc),1)
+OBJECTS += gccsupport.o
+endif
 OBJECTS += $(ASMOBJECTS)
 
 # used for secondary build

@@ -4,4 +4,4 @@ rem set SDK="D:\amigaxcompile\vbcc\targets\m68k-amigaos\include"
 del *.o /q
 del *.device /q
 cls
-make
+make compiler_vcc=1

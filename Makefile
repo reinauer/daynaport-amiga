@@ -1,15 +1,14 @@
 ###############################################################################
 #
-# makefile for vbcc or gcc
+# makefile for gcc (default) or vbcc
 #
 # original author: Henryk Richter <henryk.richter@gmx.net>
 # 
 # concept:
 #
 # tools required:
-#  - vbcc, defaulting to m68k-amigaos
-#  - vlink
-#  (- vasm)
+#  - m68k-amigaos-gcc (tested with 16.2), or
+#  - vbcc + vlink: make compiler_vcc=1
 #
 # porting:
 #
