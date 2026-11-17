@@ -21,8 +21,9 @@ artifacts of a run on the repository's Actions page. Unpack it and double-click 
 `Install-scsidayna` icon in the `scsidayna` drawer. The Installer:
 
 - copies `scsidayna.device` to `DEVS:Networks/` and the `daynawifi` tool to `C:`
-- asks for your SCSI controller, the DaynaPORT's SCSI ID, the transfer mode and (optionally) the
-  Wi-Fi network, and writes `ENVARC:scsidayna.prefs` and `ENV:scsidayna.prefs` from that. Existing
+- asks for your SCSI controller, the DaynaPORT's SCSI ID, the transfer mode and the Wi-Fi network
+  name and password - or "use the adapter's default" if the network is already set up on the
+  BlueSCSI or ZuluSCSI's SD card - and writes `ENVARC:scsidayna.prefs` and `ENV:scsidayna.prefs`. Existing
   settings can be kept; if you replace them, the old file is kept as `scsidayna.prefs.old`
 - sets up a Roadshow interface for the driver if you want one: **DHCP** (address, gateway and DNS
   server come from your router), or a **static** address with gateway and DNS server. For other

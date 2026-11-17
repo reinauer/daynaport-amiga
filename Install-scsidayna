@@ -136,18 +136,25 @@
       )
     )
 
-    ; Wi-Fi
+    ; Wi-Fi: the driver can join a network itself (AUTOCONNECT=1), or leave
+    ; it to the adapter's own configuration on its SD card
     (set #autoconnect
-      (askbool
-        (prompt "Should the driver join your Wi-Fi network when it starts?")
-        (help "Yes: the driver tells the adapter which network to join "
-              "(network name and key are asked for next).\n\n"
-              "No: the adapter joins the network set up in its own "
-              "configuration on the SD card (BlueSCSI.ini / zuluscsi.ini).")
-        (choices "Yes" "No")
+      (askchoice
+        (prompt "Wi-Fi network")
+        (help "Join a network: you type in the network name and password "
+              "next, and the driver tells the adapter to join that network "
+              "whenever it starts.\n\n"
+              "Use the adapter's default: if the network is already set up "
+              "on the BlueSCSI or ZuluSCSI itself (WiFiSSID / WiFiPassword "
+              "in bluescsi.ini or zuluscsi.ini on its SD card), the adapter "
+              "joins it on its own and the driver leaves it alone.")
+        (choices "Join a network (enter its name and password next)"
+                 "Use the adapter's default (set up on its SD card)")
         (default 0)
       )
     )
+    ; askchoice gives 0 for "join", AUTOCONNECT wants 1
+    (set #autoconnect (- 1 #autoconnect))
     (set #ssid "")
     (set #key "")
     (if #autoconnect
@@ -155,15 +162,22 @@
         (set #ssid
           (askstring
             (prompt "Wi-Fi network name (SSID):")
-            (help "The name of the network, exactly as your router shows it.")
+            (help "The name of the network, exactly as your router shows it "
+                  "(upper and lower case matter).\n\n"
+                  "Leave it empty to use the adapter's default after all.")
             (default "")
           )
         )
-        (set #key
-          (askstring
-            (prompt "Wi-Fi key (password) for " #ssid ":")
-            (help "Leave empty for an open network.")
-            (default "")
+        (if (= (strlen #ssid) 0)
+          (set #autoconnect 0)
+          (set #key
+            (askstring
+              (prompt "Wi-Fi password for \"" #ssid "\":")
+              (help "The network's WPA key. Leave it empty for an open "
+                    "network.\n\n"
+                    "It is stored as plain text in ENVARC:scsidayna.prefs.")
+              (default "")
+            )
           )
         )
       )
