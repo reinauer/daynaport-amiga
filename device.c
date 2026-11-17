@@ -1319,16 +1319,24 @@ SAVEDS void frame_proc(void) {
 												
 						// Receive packets
 						while (numPackets>0) {
-							if (dataReceived<4) {
+							if (dataReceived<2) {
 								logMessage(db,"PacketServer: Buffer underrun [1]");
 								break;
 							}
 							const USHORT packetSize = ((USHORT)dataStart[0]  << 8) | (USHORT)dataStart[1];
 							dataStart+= 2;
 							dataReceived-=2;
-							
+
+							// Check the packet is all there BEFORE skipping or reading it:
+							// on a truncated batch dataReceived (unsigned) used to wrap and
+							// the loop went on parsing whatever lay past the buffer
+							if (packetSize > dataReceived) {
+								logMessage(db,"PacketServer: Buffer underrun [2]");
+								break;
+							}
+
 							// Check packet has minimum size for Ethernet header
-							if (packetSize < 14) {
+							if (packetSize < HW_ETH_HDR_SIZE) {
 								logMessage(db,"PacketServer: Warn - Packet too small");
 								dataStart += packetSize;
 								dataReceived -= packetSize;
@@ -1338,11 +1346,6 @@ SAVEDS void frame_proc(void) {
 							
 							const USHORT packetType = ((USHORT)dataStart[12] << 8)| ((USHORT)dataStart[13]);							
 							//logMessagef(db,"PacketServer: Received Packet type %lx received, size=%ld", packetType, packetSize);
-							
-							if (packetSize > dataReceived) {
-								logMessage(db,"PacketServer: Buffer underrun [2]");
-								break;
-							}
 							
 							ObtainSemaphore(&db->db_ReadListSem);							
 							struct IOSana2Req *ior = NULL;						
