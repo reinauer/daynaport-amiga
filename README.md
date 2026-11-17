@@ -10,6 +10,12 @@ not in the original yet. Releases of the fork are on this repository's Releases 
 one optional key. The fork has been running on an Amiga 500 (GVP A530, BlueSCSI v2) and an Amiga 1200
 (DataFlyer SCSI+, ZuluSCSI) for months; it is built for the 68000 and runs on every CPU.
 
+- **1.10** (2026-11-16): built with GCC 16.2, fully freestanding (vbcc still works). A stray packet
+  nobody reads (IPv6, LLDP, ...) no longer stalls the receive path for up to 20 ms, poll delays are
+  timed exactly (so a `POLL0MS` below 20 ms takes effect), a second `OpenDevice` while the first was
+  still starting could crash, a corrupt batch could be parsed past the buffer end,
+  `S2_DELMULTICASTADDRESS` frees the group again, the per-line log file is only written with
+  `DEBUG=2`, and more (see the commit history).
 - **1.9** (2026-10-24): the `daynawifi` Shell tool (below): the adapter's Wi-Fi status, a forced
   re-join for an adapter that still says "connected" after the router dropped it, and a scan.
   `InstallDayna` copies it to `C:`. The driver itself is unchanged.
