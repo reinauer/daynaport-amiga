@@ -3,12 +3,39 @@ Created by RobSmithDev
 
 ## About this fork
 
-This is a fork of [RobSmithDev/daynaport-amiga](https://github.com/RobSmithDev/daynaport-amiga)
-(the driver is Rob Smith's; see the credits below). It carries a few fixes and one feature that are
-not in the original yet. Releases of the fork are on this repository's Releases page; the file is
-`scsidayna.device`, copied to `DEVS:Networks/`, with the same `scsidayna.prefs` as the original plus
-one optional key. The fork has been running on an Amiga 500 (GVP A530, BlueSCSI v2) and an Amiga 1200
-(DataFlyer SCSI+, ZuluSCSI) for months; it is built for the 68000 and runs on every CPU.
+This is a fork of [RobSmithDev/daynaport-amiga](https://github.com/RobSmithDev/daynaport-amiga).
+The driver is Rob Smith's; see the credits below. The fork collects fixes that are not in the
+original yet:
+
+- the fixes and features of [Laine Jones' fork](https://github.com/lainejones/daynaport-amiga)
+  (shutdown races, multicast, the `daynawifi` tool; releases 1.6 to 1.9 below)
+- Erik Hemming's fix for the 68000 batch alignment
+- its own bug and speed fixes (1.10)
+
+It is built for the 68000 and runs on every CPU.
+
+### Installing
+
+Every push builds an installer archive, `scsidayna-<version>.lha`; download it from the
+artifacts of a run on the repository's Actions page. Unpack it and run the installer from its drawer:
+
+```
+Execute Install-scsidayna
+```
+
+This copies `scsidayna.device` to `DEVS:Networks/` and `daynawifi` to `C:`. It installs the
+example `scsidayna.prefs` to `ENVARC:` only if you don't have one yet, then copies the prefs to
+`ENV:`. Edit `ENVARC:scsidayna.prefs` (see "Config File" below), then point your TCP/IP stack at
+`DEVS:Networks/scsidayna.device` as for any other SANA-II driver.
+
+### Building
+
+`make` builds the driver and `daynawifi` with GCC (tested with m68k-amigaos-gcc 16.2 from
+[AmigaPorts](https://github.com/AmigaPorts/m68k-amigaos-gcc)). Both are linked fully freestanding:
+no libnix, just a small set of 68000 string routines in `gccsupport/`. `make dist` packs the
+installer archive into `dist/`. `make compiler_vcc=1` (or `compile.bat`) still builds with vbcc.
+
+### Changes
 
 - **1.10** (2026-11-16): built with GCC 16.2, fully freestanding (vbcc still works). A stray packet
   nobody reads (IPv6, LLDP, ...) no longer stalls the receive path for up to 20 ms, poll delays are
@@ -18,7 +45,7 @@ one optional key. The fork has been running on an Amiga 500 (GVP A530, BlueSCSI 
   `DEBUG=2`, and more (see the commit history).
 - **1.9** (2026-10-24): the `daynawifi` Shell tool (below): the adapter's Wi-Fi status, a forced
   re-join for an adapter that still says "connected" after the router dropped it, and a scan.
-  `InstallDayna` copies it to `C:`. The driver itself is unchanged.
+  The driver itself is unchanged.
 - **1.8** (2026-10-22): after a TCP/IP stack cycled the unit `S2_OFFLINE` then `S2_ONLINE` to reset it
   (PrismNet does that when a write stalls), the driver refused every read and write "out of service"
   until the device was closed and reopened; the network was dead for good. The packet task now
@@ -35,7 +62,7 @@ one optional key. The fork has been running on an Amiga 500 (GVP A530, BlueSCSI 
   management, the batch send wrote a word to an odd address (an address error on a 68000), the WiFi
   key no longer appears in the debug log, and a few more (see the commit history).
 
-Original README follows.
+### Original README
 
 
 This is an implementation of a SANA-II driver for the Amiga, which allows you to use either a PicoW enabled BlueSCSI V2, or various WiFi equipped ZuluSCSI models to give internet access to the machine!
