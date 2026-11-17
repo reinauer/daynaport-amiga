@@ -302,6 +302,7 @@ static LONG startUnit(DEVBASEP, struct ScsiDaynaSettings* settings) {
 			D(("scsidayna: Already connected to requested WIFI network"));
 		} else {
 			struct SCSIWifi_JoinRequest request;
+			memset(&request, 0, sizeof(request));
 			strcpy(request.ssid, settings->ssid);
 			strcpy(request.key, settings->key);
 			SCSIWifi_joinNetwork(wifiDevice, &request);
@@ -734,6 +735,11 @@ SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) D
 	case S2_DEVICEQUERY: {
 			struct Sana2DeviceQuery *devquery;
 			devquery = ioreq->ios2_StatData;
+			if (!devquery) {
+				ioreq->ios2_Req.io_Error = S2ERR_BAD_ARGUMENT;
+				ioreq->ios2_WireError = S2WERR_NULL_POINTER;
+				break;
+			}
 			devquery->DevQueryFormat = 0;        // this is format 0
 			devquery->DeviceLevel = 0;           // this spec defines level 0
 			if (devquery->SizeAvailable >= 18) devquery->AddrFieldSize = HW_ADDRFIELDSIZE * 8; // in bits
@@ -806,7 +812,12 @@ SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) D
 	case S2_GETSPECIALSTATS:
 		{
 		  struct Sana2SpecialStatHeader *s2ssh = (struct Sana2SpecialStatHeader *)ioreq->ios2_StatData;
-		  s2ssh->RecordCountSupplied = 0;
+		  if (s2ssh) {
+			  s2ssh->RecordCountSupplied = 0;
+		  } else {
+			  ioreq->ios2_Req.io_Error = S2ERR_BAD_ARGUMENT;
+			  ioreq->ios2_WireError = S2WERR_NULL_POINTER;
+		  }
 		}
 		break;
 			/*
@@ -840,7 +851,12 @@ SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) D
 		}
 	}
 
-	if (ioreq) DevTermIO(db, (struct IORequest*)ioreq);
+	if (ioreq) {
+		// The wire error only means something with an error; don't hand a
+		// successful command back with S2WERR_GENERIC_ERROR in it
+		if (!ioreq->ios2_Req.io_Error) ioreq->ios2_WireError = 0;
+		DevTermIO(db, (struct IORequest*)ioreq);
+	}
 }
 
 // SANA-2 Event management
@@ -936,6 +952,8 @@ ULONG write_frame(struct IOSana2Req *req, UBYTE* frame, SCSIWIFIDevice scsiDevic
    
    // Skip if no packet
    if (sz < 1) {
+	   req->ios2_Req.io_Error  = S2ERR_BAD_ARGUMENT;
+	   req->ios2_WireError = S2WERR_BUFF_ERROR;
 	   D(("Zero size packet rejected"));
 	   DoEvent(db, S2EVENT_ERROR | S2EVENT_BUFF | S2EVENT_SOFTWARE);
 	   return 0;
@@ -1519,7 +1537,7 @@ SAVEDS void frame_proc(void) {
 					// at the head of the queue forever, jamming all traffic behind them
 					const ULONG wireSize = (ior->ios2_Req.io_Flags & SANA2IOF_RAW) ? szl : szl + HW_ETH_HDR_SIZE;
 					if ((wireSize < 1) || (wireSize > SCSIWIFI_PACKET_MAX_SIZE)) {
-						ior->ios2_Req.io_Error = S2ERR_MTU_EXCEEDED;
+						ior->ios2_Req.io_Error = wireSize ? S2ERR_MTU_EXCEEDED : S2ERR_BAD_ARGUMENT;
 						ior->ios2_WireError = S2WERR_BUFF_ERROR;
 						Remove((struct Node*)ior);
 						DevTermIO(db, (struct IORequest *)ior);
