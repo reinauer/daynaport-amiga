@@ -9,7 +9,8 @@
 ;   ENVARC:scsidayna.prefs (+ ENV:)    the driver settings, asked for here
 ; and, if you want, a Roadshow interface for it, with DHCP or a static
 ; address:
-;   DEVS:NetInterfaces/scsidayna
+;   DEVS:NetInterfaces/scsidayna (or the interface file that already
+;   names scsidayna.device)
 ;   DEVS:Internet/Routes, DEVS:Internet/name_resolution   (static only)
 
 (set @app-name "scsidayna.device")
@@ -232,6 +233,26 @@
 ; Roadshow interface
 
 (set #roadshow (= (exists "DEVS:NetInterfaces" (noreq)) 2))
+
+; An interface for the driver may already be there under another name
+; (DEVS:NetInterfaces/wifi, ...). Use that file instead of adding a second
+; interface on the same device, and leave it alone unless asked.
+(set #found "")
+(if #roadshow
+  (foreach "DEVS:NetInterfaces" "#?"
+    (if (AND (= (strlen #found) 0)
+             (< @each-type 0)
+             (NOT (patmatch "#?.info" @each-name)))
+      (if (= 0 (run (cat "C:Search >NIL: \"DEVS:NetInterfaces/" @each-name
+                         "\" scsidayna.device QUIET")
+                    (safe)))
+        (set #found @each-name)
+      )
+    )
+  )
+)
+(if (> (strlen #found) 0) (set #iface (tackon "DEVS:NetInterfaces" #found)))
+
 (set #netdefault 2)
 (if (AND #roadshow (<> (exists #iface (noreq)) 1)) (set #netdefault 0))
 
@@ -239,7 +260,11 @@
   (askchoice
     (prompt "Set up a Roadshow network interface for scsidayna.device?"
             (if (exists #iface (noreq))
-              (cat "\n\n(" #iface " exists and would be replaced.)")
+              (if (> (strlen #found) 0)
+                (cat "\n\n(" #iface " already uses scsidayna.device; "
+                     "it would be replaced.)")
+                (cat "\n\n(" #iface " exists and would be replaced.)")
+              )
               ""
             )
     )
