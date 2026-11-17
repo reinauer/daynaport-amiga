@@ -1,33 +1,378 @@
-; Install-scsidayna - installs scsidayna.device and the daynawifi tool
+; Install-scsidayna - Installer script for scsidayna.device
 ;
-; Run it from the drawer it came in:   Execute Install-scsidayna
+; Double-click the icon, or from a Shell in this drawer:
+;   Installer Install-scsidayna
 ;
-;   DEVS:Networks/scsidayna.device   the SANA-II driver
-;   C:daynawifi                      the adapter's Wi-Fi from a Shell
-;   ENVARC:scsidayna.prefs           example settings, only if there are none
-;
-; Your TCP/IP stack's interface setup is left alone: point it at
-; DEVS:Networks/scsidayna.device as for any other SANA-II driver.
+; Installs:
+;   DEVS:Networks/scsidayna.device     the SANA-II driver
+;   C:daynawifi                        the adapter's Wi-Fi from a Shell
+;   ENVARC:scsidayna.prefs (+ ENV:)    the driver settings, asked for here
+; and, if you want, a Roadshow interface for it, with DHCP or a static
+; address:
+;   DEVS:NetInterfaces/scsidayna
+;   DEVS:Internet/Routes, DEVS:Internet/name_resolution   (static only)
 
-If NOT EXISTS DEVS:Networks
-  MakeDir DEVS:Networks
-EndIf
-Copy scsidayna.device DEVS:Networks/ CLONE QUIET
-Echo "Installed DEVS:Networks/scsidayna.device"
+(set @app-name "scsidayna.device")
+(set @default-dest "DEVS:Networks")
 
-Copy daynawifi C: CLONE QUIET
-Protect C:daynawifi +e
-Echo "Installed C:daynawifi"
+(set #prefs "ENVARC:scsidayna.prefs")
+(set #iface "DEVS:NetInterfaces/scsidayna")
+(set #routes "DEVS:Internet/Routes")
+(set #dns "DEVS:Internet/name_resolution")
 
-If EXISTS ENVARC:scsidayna.prefs
-  Echo "Kept your ENVARC:scsidayna.prefs"
-Else
-  Copy scsidayna.prefs ENVARC:scsidayna.prefs CLONE QUIET
-  Echo "Installed ENVARC:scsidayna.prefs - set DEVICE, and SSID/KEY for AUTOCONNECT"
-  Echo "(scsidayna-gvp.prefs in this drawer is an example for GVP controllers)"
-EndIf
-Copy ENVARC:scsidayna.prefs ENV:scsidayna.prefs CLONE QUIET
+(welcome
+  (cat "This installs scsidayna.device, the SANA-II driver for the "
+       "Wi-Fi DaynaPORT of a BlueSCSI v2 or ZuluSCSI, and the daynawifi "
+       "Shell tool.\n\n"
+       "It can also set up a Roadshow network interface for it."
+  )
+)
 
-Echo ""
-Echo "Done. Settings are read when the driver starts; after editing"
-Echo "ENVARC:scsidayna.prefs copy it to ENV: or reboot."
+;------------------------------------------------------------------------
+; The driver and the tool
+
+(if (<> (exists "DEVS:Networks" (noreq)) 2)
+  (makedir "DEVS:Networks")
+)
+
+(copylib
+  (prompt "Installing scsidayna.device in DEVS:Networks")
+  (help @copylib-help)
+  (source "scsidayna.device")
+  (dest "DEVS:Networks")
+  (confirm "expert")
+)
+
+(copyfiles
+  (prompt "Installing the daynawifi Shell tool in C:")
+  (help @copyfiles-help)
+  (source "daynawifi")
+  (dest "C:")
+  (confirm "expert")
+)
+(protect "C:daynawifi" "+e")
+
+(complete 30)
+
+;------------------------------------------------------------------------
+; Driver settings (ENVARC:scsidayna.prefs)
+
+(set #writeprefs 1)
+(if (= (exists #prefs (noreq)) 1)
+  (set #writeprefs
+    (askchoice
+      (prompt "You already have driver settings in " #prefs ".\n\n"
+              "Keep them, or set the driver up again?")
+      (help "Keep: the file is left as it is.\n\n"
+            "Set up again: you are asked for the SCSI controller and the "
+            "Wi-Fi network, and a new file is written. The old one is kept "
+            "as " #prefs ".old.")
+      (choices "Keep my settings" "Set up the driver again")
+      (default 0)
+    )
+  )
+)
+
+(if #writeprefs
+  (
+    ; SCSI controller driver
+    (set #devchoice
+      (askchoice
+        (prompt "Which SCSI controller is the BlueSCSI or ZuluSCSI connected to?")
+        (help "This is the SCSI driver of your controller. HDToolBox shows it "
+              "(its SCSI_DEVICE_NAME tool type), as do SCSIMounter and similar "
+              "tools.\n\n"
+              "scsi.device here means a Commodore A590, A2091 or A3000 "
+              "controller - not the IDE port of an A600, A1200 or A4000.")
+        (choices "A590 / A2091 / A3000 (scsi.device)"
+                 "GVP Series II, A530 (gvpscsi.device)"
+                 "Blizzard 1230 SCSI kit (1230scsi.device)"
+                 "Blizzard 2060 (2060scsi.device)"
+                 "Other - type in its name")
+        (default 0)
+      )
+    )
+    (set #device
+      (select #devchoice "scsi.device" "gvpscsi.device" "1230scsi.device"
+                         "2060scsi.device" "")
+    )
+    (if (= #devchoice 4)
+      (set #device
+        (askstring
+          (prompt "Name of the SCSI driver:")
+          (help "For example 2nd.scsi.device or ematscsi.device.")
+          (default "scsi.device")
+        )
+      )
+    )
+
+    ; SCSI ID
+    (set #idchoice
+      (askchoice
+        (prompt "Which SCSI ID is the DaynaPORT on?")
+        (help "Auto-detect asks every ID (starting at 4) when the driver "
+              "starts, and takes the first DaynaPORT that answers.")
+        (choices "Auto-detect" "0" "1" "2" "3" "4" "5" "6" "7")
+        (default 0)
+      )
+    )
+    (set #deviceid (- #idchoice 1))
+
+    ; Transfer mode
+    (set #mode 0)
+    (if (= #devchoice 0) (set #mode 1))
+    (if (= #devchoice 1) (set #mode 2))
+    (set #mode
+      (askchoice
+        (prompt "Transfer mode for " #device ":")
+        (help "Some SCSI drivers need the transfers padded or split:\n\n"
+              "Normal: most controllers.\n"
+              "24-byte pad: scsi.device (A590, A2091, A3000).\n"
+              "Single transfer: gvpscsi.device (but a GVP controller with "
+              "a Guru ROM works in normal mode).\n\n"
+              "The suggested mode is chosen from the controller.")
+        (choices "Normal" "24-byte pad (scsi.device)" "Single transfer (gvpscsi.device)")
+        (default #mode)
+      )
+    )
+
+    ; Wi-Fi
+    (set #autoconnect
+      (askbool
+        (prompt "Should the driver join your Wi-Fi network when it starts?")
+        (help "Yes: the driver tells the adapter which network to join "
+              "(network name and key are asked for next).\n\n"
+              "No: the adapter joins the network set up in its own "
+              "configuration on the SD card (BlueSCSI.ini / zuluscsi.ini).")
+        (choices "Yes" "No")
+        (default 0)
+      )
+    )
+    (set #ssid "")
+    (set #key "")
+    (if #autoconnect
+      (
+        (set #ssid
+          (askstring
+            (prompt "Wi-Fi network name (SSID):")
+            (help "The name of the network, exactly as your router shows it.")
+            (default "")
+          )
+        )
+        (set #key
+          (askstring
+            (prompt "Wi-Fi key (password) for " #ssid ":")
+            (help "Leave empty for an open network.")
+            (default "")
+          )
+        )
+      )
+    )
+
+    ; Multicast
+    (set #multicast
+      (askbool
+        (prompt "Pass multicast groups to the adapter?")
+        (help "Needed for multicast DNS (names like amiga.local) and other "
+              "multicast traffic.\n\n"
+              "Leave it off with a GVP controller: a BlueSCSI behind "
+              "gvpscsi.device answered the command with a status that "
+              "stopped the machine.")
+        (choices "Yes" "No")
+        (default 0)
+      )
+    )
+
+    (if (= (exists #prefs (noreq)) 1)
+      (copyfiles (source #prefs) (dest "ENVARC:") (newname "scsidayna.prefs.old"))
+    )
+    (textfile
+      (prompt "Writing the driver settings to " #prefs)
+      (help @textfile-help)
+      (dest #prefs)
+      (append (cat "DEVICE=" #device "\n"))
+      (append (cat "DEVICEID=" #deviceid "\n"))
+      (append "PRIORITY=0\n")
+      (append (cat "MODE=" #mode "\n"))
+      (append (cat "AUTOCONNECT=" #autoconnect "\n"))
+      (append (cat "SSID=" #ssid "\n"))
+      (append (cat "KEY=" #key "\n"))
+      (append "DATASIZE=8192\n")
+      (append "DEBUG=0\n")
+      (append "AGGRESSIVE=0\n")
+      (append "POLLMS=80\n")
+      (append "POLL0MS=20\n")
+      (append "FASTHOLD=16\n")
+      (append "TXBURST=0\n")
+      (append (cat "MULTICAST=" #multicast "\n"))
+    )
+  )
+)
+
+; The driver reads ENV: when it starts
+(copyfiles (source #prefs) (dest "ENV:"))
+
+(complete 70)
+
+;------------------------------------------------------------------------
+; Roadshow interface
+
+(set #roadshow (= (exists "DEVS:NetInterfaces" (noreq)) 2))
+(set #netdefault 2)
+(if (AND #roadshow (<> (exists #iface (noreq)) 1)) (set #netdefault 0))
+
+(set #net
+  (askchoice
+    (prompt "Set up a Roadshow network interface for scsidayna.device?"
+            (if (exists #iface (noreq))
+              (cat "\n\n(" #iface " exists and would be replaced.)")
+              ""
+            )
+    )
+    (help "DHCP: the Amiga gets its address, gateway and DNS server from "
+          "your router. This is right for almost every home network.\n\n"
+          "Static address: you type in the address, netmask, gateway and "
+          "DNS server.\n\n"
+          "Leave my network setup alone: nothing is written; set up your "
+          "TCP/IP stack yourself, pointing it at "
+          "DEVS:Networks/scsidayna.device.\n\n"
+          "This writes the Roadshow configuration in DEVS:NetInterfaces "
+          "and DEVS:Internet. For other stacks (AmiTCP, Miami) choose the "
+          "last option.")
+    (choices "DHCP (address from your router)"
+             "Static address"
+             "Leave my network setup alone")
+    (default #netdefault)
+  )
+)
+
+(if (< #net 2)
+  (if (<> (exists "DEVS:NetInterfaces" (noreq)) 2)
+    (makedir "DEVS:NetInterfaces")
+  )
+)
+
+(if (= #net 0)
+  (textfile
+    (prompt "Writing the Roadshow interface " #iface " (DHCP)")
+    (help @textfile-help)
+    (dest #iface)
+    (append "device=scsidayna.device\n")
+    (append "configure=dhcp\n")
+  )
+)
+
+(if (= #net 1)
+  (
+    (set #address
+      (askstring
+        (prompt "IP address of this Amiga:")
+        (help "An address on your network that no other machine uses, "
+              "outside the range your router hands out by DHCP.")
+        (default "192.168.86.36")
+      )
+    )
+    (set #netmask
+      (askstring
+        (prompt "Netmask:")
+        (help "255.255.255.0 for almost every home network.")
+        (default "255.255.255.0")
+      )
+    )
+    (set #gateway
+      (askstring
+        (prompt "Gateway (your router's address):")
+        (help "Packets for the internet go here.")
+        (default "192.168.86.1")
+      )
+    )
+    (set #nameserver
+      (askstring
+        (prompt "DNS server:")
+        (help "Usually your router's address too.")
+        (default #gateway)
+      )
+    )
+
+    (textfile
+      (prompt "Writing the Roadshow interface " #iface " (static " #address ")")
+      (help @textfile-help)
+      (dest #iface)
+      (append "device=scsidayna.device\n")
+      (append (cat "address=" #address "\n"))
+      (append (cat "netmask=" #netmask "\n"))
+    )
+
+    (if (<> (exists "DEVS:Internet" (noreq)) 2)
+      (makedir "DEVS:Internet")
+    )
+
+    (set #writeroutes 1)
+    (if (= (exists #routes (noreq)) 1)
+      (set #writeroutes
+        (askbool
+          (prompt #routes " exists. Replace it with a default route to "
+                  #gateway "?")
+          (help "It holds the routes Roadshow sets up. Keep it if you have "
+                "already set up a default route there; the old file is "
+                "kept as " #routes ".old.")
+          (choices "Replace" "Keep")
+          (default 1)
+        )
+      )
+    )
+    (if #writeroutes
+      (
+        (if (= (exists #routes (noreq)) 1)
+          (copyfiles (source #routes) (dest "DEVS:Internet") (newname "Routes.old"))
+        )
+        (textfile
+          (prompt "Writing the default route to " #routes)
+          (help @textfile-help)
+          (dest #routes)
+          (append (cat "default " #gateway "\n"))
+        )
+      )
+    )
+
+    (set #writedns 1)
+    (if (= (exists #dns (noreq)) 1)
+      (set #writedns
+        (askbool
+          (prompt #dns " exists. Replace it with DNS server " #nameserver "?")
+          (help "It holds the DNS servers (and host names) Roadshow uses. "
+                "The old file is kept as " #dns ".old.")
+          (choices "Replace" "Keep")
+          (default 1)
+        )
+      )
+    )
+    (if #writedns
+      (
+        (if (= (exists #dns (noreq)) 1)
+          (copyfiles (source #dns) (dest "DEVS:Internet") (newname "name_resolution.old"))
+        )
+        (textfile
+          (prompt "Writing the DNS server to " #dns)
+          (help @textfile-help)
+          (dest #dns)
+          (append (cat "nameserver " #nameserver "\n"))
+        )
+      )
+    )
+  )
+)
+
+(complete 100)
+
+(message
+  (cat "scsidayna.device is installed.\n\n"
+       (if (< #net 2)
+         "Reboot, or start Roadshow, to bring the interface up.\n\n"
+         "Point your TCP/IP stack at DEVS:Networks/scsidayna.device.\n\n"
+       )
+       "The settings are read when the driver starts: after editing "
+       "ENVARC:scsidayna.prefs, copy it to ENV: or reboot.\n\n"
+       "\"daynawifi\" in a Shell shows the adapter's Wi-Fi status."
+  )
+)

@@ -17,16 +17,20 @@ It is built for the 68000 and runs on every CPU.
 ### Installing
 
 Every push builds an installer archive, `scsidayna-<version>.lha`; download it from the
-artifacts of a run on the repository's Actions page. Unpack it and run the installer from its drawer:
+artifacts of a run on the repository's Actions page. Unpack it and double-click the
+`Install-scsidayna` icon in the `scsidayna` drawer. The Installer:
 
-```
-Execute Install-scsidayna
-```
+- copies `scsidayna.device` to `DEVS:Networks/` and the `daynawifi` tool to `C:`
+- asks for your SCSI controller, the DaynaPORT's SCSI ID, the transfer mode and (optionally) the
+  Wi-Fi network, and writes `ENVARC:scsidayna.prefs` and `ENV:scsidayna.prefs` from that. Existing
+  settings can be kept; if you replace them, the old file is kept as `scsidayna.prefs.old`
+- sets up a Roadshow interface for the driver if you want one: **DHCP** (address, gateway and DNS
+  server come from your router), or a **static** address with gateway and DNS server. For other
+  TCP/IP stacks, skip this and point the stack at `DEVS:Networks/scsidayna.device`.
 
-This copies `scsidayna.device` to `DEVS:Networks/` and `daynawifi` to `C:`. It installs the
-example `scsidayna.prefs` to `ENVARC:` only if you don't have one yet, then copies the prefs to
-`ENV:`. Edit `ENVARC:scsidayna.prefs` (see "Config File" below), then point your TCP/IP stack at
-`DEVS:Networks/scsidayna.device` as for any other SANA-II driver.
+The Installer comes with Workbench 3.0 and later; for 2.x it is on Aminet (`util/misc/Installer-43_3`).
+Without it, copy `scsidayna.device` to `DEVS:Networks/` and `scsidayna.prefs` to `ENVARC:` and
+`ENV:` by hand, and edit it as described under "Config File" below.
 
 ### Building
 
