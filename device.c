@@ -1627,7 +1627,8 @@ SAVEDS void frame_proc(void) {
 				ReleaseSemaphore(&db->db_WriteListSem);
 			}
 			
-			recv = SetSignal(0L, 0L);
+			// Keep a Ctrl-C the receive loop already took (and cleared) above
+			recv = SetSignal(0L, 0L) | (recv & SIGBREAKF_CTRL_C);
 			if (recv & SIGBREAKF_CTRL_C) {
 				D(("Terminate Requested"));
 			} else {
