@@ -32,6 +32,8 @@
 
 /* multicast groups kept (db_mcastPending has a bit per entry) */
 #define MCAST_MAX 16
+/* distinct packet types remembered from CMD_READ */
+#define READ_TYPES_MAX 8
 
 struct devbase {
 	struct Library db_Lib;
@@ -75,6 +77,15 @@ struct devbase {
 	volatile USHORT db_mcastCount;          /* addresses in the table */
 	volatile UWORD db_mcastPending;         /* bit n: entry n not given to the adapter yet */
 	struct SignalSemaphore db_mcastSem;
+	/* Packet types the stack has posted CMD_READs for (under db_ReadListSem).
+	 * A packet of such a type with no read waiting is worth a short wait for
+	 * the stack to post one; anything else is dropped at once. */
+	UWORD db_readTypes[READ_TYPES_MAX];
+	volatile USHORT db_readTypeCount;
+	/* Set by the packet task while it waits for a read buffer: CMD_READ and
+	 * S2_READORPHAN then signal db_readSigMask to wake it */
+	volatile UBYTE db_readStarved;
+	ULONG db_readSigMask;
 };
 
 #ifndef DEVBASETYPE

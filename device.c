@@ -315,6 +315,8 @@ static LONG startUnit(DEVBASEP, struct ScsiDaynaSettings* settings) {
 	
 	db->db_mcastCount = 0;
 	db->db_mcastPending = 0;
+	db->db_readTypeCount = 0;
+	db->db_readStarved = 0;
 	db->db_online = 1;
 	db->db_currentWifiState = 0;   // the server process will bring this up
 
@@ -604,7 +606,16 @@ SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) D
 			ioreq->ios2_Req.io_Flags &= ~SANA2IOF_QUICK;
 			ObtainSemaphore(&db->db_ReadListSem);
 			AddTail((struct List*)&db->db_ReadList, (struct Node*)ioreq);
+			{
+				USHORT i, n = db->db_readTypeCount;
+				for (i = 0; i < n && db->db_readTypes[i] != ioreq->ios2_PacketType; i++) ;
+				if (i == n && n < READ_TYPES_MAX) {
+					db->db_readTypes[n] = (UWORD)ioreq->ios2_PacketType;
+					db->db_readTypeCount = n + 1;
+				}
+			}
 			ReleaseSemaphore(&db->db_ReadListSem);
+			if (db->db_readStarved) Signal((struct Task*)db->db_Proc, db->db_readSigMask);
 			ioreq = NULL;
 		}
 		break;
@@ -695,6 +706,7 @@ SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) D
 			ObtainSemaphore(&db->db_ReadOrphanListSem);
 			AddTail((struct List*)&db->db_ReadOrphanList, (struct Node*)ioreq);
 			ReleaseSemaphore(&db->db_ReadOrphanListSem);
+			if (db->db_readStarved) Signal((struct Task*)db->db_Proc, db->db_readSigMask);
 			ioreq = NULL;
 		}
 		break;      
@@ -984,64 +996,6 @@ ULONG write_frame(struct IOSana2Req *req, UBYTE* frame, SCSIWIFIDevice scsiDevic
 	}
 }
 
-ULONG read_frame(DEVBASEP, struct IOSana2Req *req, UBYTE *frm, USHORT packetSize) {
-	ULONG datasize;
-	UBYTE *frame_ptr;
-	BOOL broadcast;
-
-	// This length includes 4 bytes for the CRC at the end, but we dont need that
-	ULONG sz   = ((ULONG)frm[0]<<8)|((ULONG)frm[1]);
-	// Sanity check: must contain at least an Ethernet header plus the CRC, and must
-	// not claim more data than was actually transferred (guards against runts and
-	// a corrupt length underflowing "sz - HW_ETH_HDR_SIZE" below)
-	if ((sz < HW_ETH_HDR_SIZE + 4) || (sz + 6 > (ULONG)packetSize)) {
-		req->ios2_Req.io_Error = S2ERR_SOFTWARE;
-		req->ios2_WireError = S2WERR_GENERIC_ERROR;
-		req->ios2_DataLength = 0;
-		DoEvent(db, S2EVENT_ERROR | S2EVENT_RX);
-		return 0;
-	}
-	sz -= 4;
-
-	req->ios2_PacketType = ((USHORT)frm[12+6]<<8)|((USHORT)frm[13+6]);
-
-	if (req->ios2_Req.io_Flags & SANA2IOF_RAW) {
-		frame_ptr = frm+6;
-		datasize = sz;
-		req->ios2_Req.io_Flags = SANA2IOF_RAW;
-	} else {
-		frame_ptr = frm+6+HW_ETH_HDR_SIZE;
-		datasize = sz-HW_ETH_HDR_SIZE;
-		req->ios2_Req.io_Flags = 0;
-	}
-	req->ios2_DataLength = datasize;
-
-	// copy frame to device user (probably tcp/ip system)
-	struct BufferManagement *bm = (struct BufferManagement *)req->ios2_BufferManagement;
-	if (!BM_COPYTO(bm, req->ios2_Data, frame_ptr, datasize)) {
-		req->ios2_Req.io_Error = S2ERR_SOFTWARE;
-		req->ios2_WireError = S2WERR_BUFF_ERROR;
-		DoEvent(db, S2EVENT_ERROR | S2EVENT_BUFF | S2EVENT_SOFTWARE);
-		return 0;
-	}
-  
-	req->ios2_Req.io_Error = req->ios2_WireError = 0;
-
-	memcpy(req->ios2_SrcAddr, frm+6+6, HW_ADDRFIELDSIZE);
-	memcpy(req->ios2_DstAddr, frm+6, HW_ADDRFIELDSIZE);  
-
-	broadcast = TRUE;
-	for (int i=0; i<HW_ADDRFIELDSIZE; i++) {
-		if (frm[i+6] != 0xff) {
-			broadcast = FALSE;
-			break;
-		}
-	}
-	
-	if (broadcast) req->ios2_Req.io_Flags |= SANA2IOF_BCAST;
-	return 1;
-}
-
 // Receive a packet
 ULONG receivePacket(DEVBASEP, UBYTE* packet, USHORT packetSize, struct IOSana2Req *req) {	
 	ULONG datasize;
@@ -1087,6 +1041,117 @@ ULONG receivePacket(DEVBASEP, UBYTE* packet, USHORT packetSize, struct IOSana2Re
 	return 1;
 }
 
+
+// Take the first CMD_READ waiting for this packet type off the read list
+static struct IOSana2Req* takeRead(DEVBASEP, USHORT packetType) {
+	struct IOSana2Req *ior, *found = NULL;
+	ObtainSemaphore(&db->db_ReadListSem);
+	for (ior = (struct IOSana2Req *)db->db_ReadList.lh_Head; ior->ios2_Req.io_Message.mn_Node.ln_Succ; ior = (struct IOSana2Req *)ior->ios2_Req.io_Message.mn_Node.ln_Succ) {
+		if (ior->ios2_PacketType == packetType) {
+			Remove((struct Node*)ior);
+			found = ior;
+			break;
+		}
+	}
+	ReleaseSemaphore(&db->db_ReadListSem);
+	return found;
+}
+
+static struct IOSana2Req* takeOrphan(DEVBASEP) {
+	struct IOSana2Req *ior;
+	ObtainSemaphore(&db->db_ReadOrphanListSem);
+	ior = (struct IOSana2Req *)RemHead((struct List*)&db->db_ReadOrphanList);
+	ReleaseSemaphore(&db->db_ReadOrphanListSem);
+	return ior;
+}
+
+// Has the stack ever posted a CMD_READ for this packet type?
+static BOOL typeWanted(DEVBASEP, USHORT packetType) {
+	USHORT i, n = db->db_readTypeCount;
+	for (i = 0; i < n; i++)
+		if (db->db_readTypes[i] == packetType) return TRUE;
+	return FALSE;
+}
+
+// How long to wait for the stack to post a read buffer for a packet it wants
+#define RX_STARVE_WAIT_MS 20
+
+struct RxWait {
+	TimeRequest_Type* time_req;
+	ULONG timerMask;
+	BOOL gaveUp;          // waited once this receive pass and nothing came
+};
+
+void setTimerDelay(TimeRequest_Type* time_req, ULONG delayMs);
+
+// The stack wants this packet type but has no read posted right now (it is
+// still processing the ones it had). Wait up to RX_STARVE_WAIT_MS for a read
+// or orphan read, woken the moment one is posted - not a blind Delay().
+static struct IOSana2Req* waitForRead(DEVBASEP, struct RxWait* w, USHORT packetType) {
+	struct IOSana2Req* ior;
+	ULONG sig = 0;
+
+	SetSignal(0, db->db_readSigMask);
+	db->db_readStarved = 1;
+	// A read posted before the flag was set sent no signal: look again
+	ior = takeRead(db, packetType);
+	if (!ior) ior = takeOrphan(db);
+	if (!ior) {
+		setTimerDelay(w->time_req, RX_STARVE_WAIT_MS);
+		SendIO((struct IORequest *)w->time_req);
+		db->db_timerUsed = TRUE;
+		for (;;) {
+			sig = Wait(db->db_readSigMask | w->timerMask | SIGBREAKF_CTRL_C);
+			if (sig & db->db_readSigMask) {
+				ior = takeRead(db, packetType);
+				if (!ior) ior = takeOrphan(db);
+				if (ior) break;
+			}
+			if (sig & (w->timerMask | SIGBREAKF_CTRL_C)) break;
+		}
+		if (!CheckIO((struct IORequest *)w->time_req)) AbortIO((struct IORequest *)w->time_req);
+		WaitIO((struct IORequest *)w->time_req);
+		SetSignal(0, w->timerMask);
+		// Leave a stop request for the main loop to see
+		if (sig & SIGBREAKF_CTRL_C) SetSignal(SIGBREAKF_CTRL_C, SIGBREAKF_CTRL_C);
+	}
+	db->db_readStarved = 0;
+	return ior;
+}
+
+// Hand one received Ethernet frame (header included, no CRC) to whoever is
+// waiting for it. Returns 1 if it was delivered.
+static ULONG deliverPacket(DEVBASEP, struct RxWait* w, UBYTE* packet, USHORT packetSize) {
+	const USHORT packetType = ((USHORT)packet[12] << 8) | (USHORT)packet[13];
+	struct IOSana2Req *ior = takeRead(db, packetType);
+
+	if (!ior) {
+		const BOOL wanted = typeWanted(db, packetType);
+		if (!wanted) db->db_DevStats.UnknownTypesReceived++;
+		ior = takeOrphan(db);
+		if (!ior) {
+			// Nobody ever asked for this type and there's no orphan read: drop
+			// it now. It used to cost a Delay(1) (up to 20 ms) per packet -
+			// IPv6, LLDP, ... - and was dropped afterwards anyway.
+			if (!wanted) return 0;
+			// Wait at most once per receive pass: if the stack is behind, more
+			// waiting per packet only slows the whole burst down
+			if (!w->gaveUp) ior = waitForRead(db, w, packetType);
+			if (!ior) {
+				w->gaveUp = TRUE;
+				db->db_DevStats.Overruns++;
+				logMessagef(db,"PacketServer: Warn - no read buffer for packet of type %lx", (ULONG)packetType);
+				DoEvent(db, S2EVENT_ERROR | S2EVENT_BUFF | S2EVENT_SOFTWARE | S2EVENT_RX);
+				return 0;
+			}
+		}
+	}
+
+	db->db_DevStats.PacketsReceived++;
+	receivePacket(db, packet, packetSize, ior);
+	DevTermIO(db, (struct IORequest *)ior);
+	return 1;
+}
 
 // Return every request queued on one list to its owner with "unit offline".
 // Always take the head afresh: DevTermIO -> ReplyMsg relinks the node into the
@@ -1255,6 +1320,11 @@ SAVEDS void frame_proc(void) {
 	// Helpful!
 	struct Library *TimerBase = (APTR) time_req->tr_node.io_Device;
 
+	// Woken by CMD_READ/S2_READORPHAN while waiting for a read buffer. Without
+	// a free signal that wait just runs to its timeout.
+	BYTE readSigBit = AllocSignal(-1);
+	db->db_readSigMask = (readSigBit >= 0) ? (1UL << readSigBit) : 0;
+
 	init->error = 0;
 	ReplyMsg((struct Message*)init);
 	unsigned long timerSignalMask = (1UL << timerPort.mp_SigBit);
@@ -1362,6 +1432,10 @@ SAVEDS void frame_proc(void) {
 		if (currentWifiState) {
 			UBYTE morePackets = 0;
 			USHORT counter = 0;   
+			struct RxWait rxWait;
+			rxWait.time_req = time_req;
+			rxWait.timerMask = timerSignalMask;
+			rxWait.gaveUp = FALSE;
 			do {
 				
 				if (db->db_amigaNetMode) {					
@@ -1404,57 +1478,8 @@ SAVEDS void frame_proc(void) {
 								continue;
 							}
 							
-							const USHORT packetType = ((USHORT)dataStart[12] << 8)| ((USHORT)dataStart[13]);							
-							//logMessagef(db,"PacketServer: Received Packet type %lx received, size=%ld", packetType, packetSize);
-							
-							ObtainSemaphore(&db->db_ReadListSem);							
-							struct IOSana2Req *ior = NULL;						
-							for (ior = (struct IOSana2Req *)db->db_ReadList.lh_Head; ior->ios2_Req.io_Message.mn_Node.ln_Succ; ior = (struct IOSana2Req *)ior->ios2_Req.io_Message.mn_Node.ln_Succ) {
-								if (ior->ios2_PacketType == packetType) {
-									db->db_DevStats.PacketsReceived++;
-									Remove((struct Node*)ior);
-									receivePacket(db, dataStart, packetSize, ior);
-									DevTermIO(db, (struct IORequest *)ior);
-									counter++;
-									ior = NULL;
-									break;
-								}
-							}
-							ReleaseSemaphore(&db->db_ReadListSem);
-							
-							// Nothing wanted it?
-							if (ior) {			
-								db->db_DevStats.UnknownTypesReceived++;
-								ObtainSemaphore(&db->db_ReadOrphanListSem);
-								ior = (struct IOSana2Req *)RemHead((struct List*)&db->db_ReadOrphanList);
-								ReleaseSemaphore(&db->db_ReadOrphanListSem);
+							counter += deliverPacket(db, &rxWait, dataStart, packetSize);
 
-								if (!ior) {
-									// No orphan buffer - signal problem
-									DoEvent(db, S2EVENT_BUFF | S2EVENT_RX);  // Signal BEFORE dropping        
-									// Very brief delay (1-2 ticks) to let RoadShow post a buffer
-									Delay(1);
-									// Try ONE more time
-									ObtainSemaphore(&db->db_ReadOrphanListSem);
-									ior = (struct IOSana2Req *)RemHead((struct List*)&db->db_ReadOrphanList);
-									ReleaseSemaphore(&db->db_ReadOrphanListSem);        
-									if (!ior) {
-										// Still no buffer - drop it
-										logMessagef(db,"PacketServer: Warn - Orphaned packet not picked up of type %lx", packetType);
-										db->db_DevStats.Overruns++;
-										DoEvent(db, S2EVENT_ERROR | S2EVENT_BUFF | S2EVENT_SOFTWARE | S2EVENT_RX);
-									} else {
-										//logMessagef(db, "PacketServer: Buffer arrived after signal - packet saved");
-										receivePacket(db, dataStart, packetSize, ior);
-										DevTermIO(db, (struct IORequest *)ior);
-									}
-								} else {
-									receivePacket(db, dataStart, packetSize, ior);
-									DevTermIO(db, (struct IORequest *)ior);  									
-									//logMessagef(db,"PacketServer: Warn - Orphaned packet picked up of type %lx", packetType);
-								} 								
-							}
-							
 							dataReceived -= packetSize;
 							
 							numPackets--;
@@ -1467,34 +1492,14 @@ SAVEDS void frame_proc(void) {
 						morePackets = packetData[5];						
 
 						if (packetSize > 6) {
-							USHORT packet_type = ((USHORT)packetData[18]<<8)|((USHORT)packetData[19]);   
-
-							ObtainSemaphore(&db->db_ReadListSem);
-							struct IOSana2Req *ior = NULL;						
-							for (ior = (struct IOSana2Req *)db->db_ReadList.lh_Head; ior->ios2_Req.io_Message.mn_Node.ln_Succ; ior = (struct IOSana2Req *)ior->ios2_Req.io_Message.mn_Node.ln_Succ) {
-								if (ior->ios2_PacketType == packet_type) {
-									db->db_DevStats.PacketsReceived++;
-									Remove((struct Node*)ior);
-									read_frame(db, ior, packetData, packetSize);        
-									DevTermIO(db, (struct IORequest *)ior);
-									counter++;
-									ior = NULL;
-									break;
-								}
-							}
-							ReleaseSemaphore(&db->db_ReadListSem);
-							
-							// Nothing wanted it?
-							if (ior) {
-								db->db_DevStats.UnknownTypesReceived++;
-								ObtainSemaphore(&db->db_ReadOrphanListSem);
-								ior = (struct IOSana2Req *)RemHead((struct List*)&db->db_ReadOrphanList);
-								ReleaseSemaphore(&db->db_ReadOrphanListSem);
-								if (ior) {
-									read_frame(db, ior, packetData, packetSize);
-									DevTermIO(db, (struct IORequest *)ior);  
-									D(("Orphan Packet Picked Up (proto %lx) !\n", packet_type));
-								} 
+							// The length in the header includes the 4-byte CRC at the end.
+							// It must cover at least an Ethernet header plus the CRC, and
+							// not claim more than was transferred (runts, corrupt lengths)
+							ULONG sz = ((ULONG)packetData[0] << 8) | (ULONG)packetData[1];
+							if ((sz < HW_ETH_HDR_SIZE + 4) || (sz + 6 > (ULONG)packetSize)) {
+								DoEvent(db, S2EVENT_ERROR | S2EVENT_RX);
+							} else {
+								counter += deliverPacket(db, &rxWait, packetData + 6, (USHORT)(sz - 4));
 							}
 						}
 					} else {
@@ -1693,6 +1698,8 @@ SAVEDS void frame_proc(void) {
 	CloseDevice((struct IORequest *)time_req);
 	DeleteIORequest((struct IORequest *)time_req);
 	FreeSignal(timerPort.mp_SigBit);
+	db->db_readSigMask = 0;
+	if (readSigBit >= 0) FreeSignal(readSigBit);
 	
 	logMessage(db,"PacketServer: Closed");
 	
