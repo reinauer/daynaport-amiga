@@ -158,6 +158,42 @@ where:
 - FASTHOLD Number of empty receive polls to keep using POLL0MS after packet traffic stops (defaults to 16)
 - TXBURST Maximum packets to send before giving receive polling another turn (0 uses the firmware/default limit, otherwise 1-64)
 
+## Startup readiness and diagnostics
+
+Opening the driver waits for the adapter to enable packet traffic and for
+Wi-Fi INFO to report a nonzero RSSI before returning success. It makes up
+to 40 attempts, with a one-second delay after each unsuccessful attempt;
+SCSI command execution time can make the wait longer than 40 seconds.
+A failed enable is retried. If readiness never arrives, opening the device
+fails, so the stack does not start DHCP or ARP against an unready adapter.
+With `AUTOCONNECT=1`, a failed join command also fails device opening.
+
+While the interface is requested online, the driver checks the link every
+five seconds when connected and every second while disconnected. It keeps
+packet reception enabled during association loss and reports ONLINE only
+after readiness returns. Failed interface enable/disable commands are
+retried at most once per second. A wired adapter that explicitly rejects
+Wi-Fi INFO with an unsupported-command/field sense code runs without link
+monitoring; transport errors and truncated replies do not select this
+fallback.
+
+With `DEBUG=1` (console) or `DEBUG=2` (console and `SYS:scsidayna.log`), failed
+commands include `cmd` (opcode/subcommand), `io` (Exec error), `status`
+(SCSI status), `actual` (transferred/requested bytes), and `sense`
+(valid flag, sense key, ASC, ASCQ). Packet contents and Wi-Fi credentials
+are not included. A GOOD SCSI status cannot hide an Exec error, and short
+packet writes are reported as transmit failures.
+
+RSSI is an association indicator, not proof that packets reach the router.
+These checks cannot detect a firmware send failure that returns successful
+SCSI status and a full transfer count.
+
+Host regression checks can be run with `python3 tests/test_readiness.py`.
+They compile the actual command/readiness functions and link-state logic
+with mocked I/O under AddressSanitizer and UndefinedBehaviorSanitizer.
+They cover delayed startup, timeout, transport errors, short writes, wired
+fallback, and recovery, but do not replace testing on an Amiga.
+
 ## Mode
 This patches around weirdness in the various SCSI drivers. Mode should be:
 - 0: This runs in normal mode

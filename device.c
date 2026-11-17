@@ -124,6 +124,46 @@ void logMessagef(struct devbase* db, const char *messageFormat, ...) {
 	logMessage(db, buf);
 }
 
+static void logScsiError(DEVBASEP, const char *operation, SCSIWIFIDevice device) {
+	struct SCSIWifi_Result r;
+	SCSIWifi_getResult(device, &r);
+	logMessagef(db, "%s: cmd=%02lx/%02lx io=%ld status=%02lx actual=%ld/%ld sense=%ld:%02lx/%02lx/%02lx",
+		operation, (ULONG)r.opcode, (ULONG)r.subcommand, r.ioError,
+		(ULONG)r.status, r.actual, r.requested, (ULONG)r.senseValid,
+		(ULONG)r.senseKey, (ULONG)r.asc, (ULONG)r.ascq);
+}
+
+/* Do not let a stack start DHCP/ARP before the adapter is ready. The
+ * packet task runs this before replying to its startup message. */
+static LONG prepareLink(DEVBASEP, SCSIWIFIDevice device) {
+	int attempt, enabled = 0, nextLog = 0;
+	for (attempt = 0; attempt < 40 && !db->db_quit; ++attempt) {
+		int report = attempt == nextLog;
+		if (report) nextLog += 5;
+		if (!enabled) {
+			enabled = SCSIWifi_enable(device, 1);
+			if (!enabled && report)
+				logScsiError(db, "Enable failed; retrying", device);
+		}
+		if (enabled) {
+			enum SCSIWifi_LinkState state = SCSIWifi_linkState(device);
+			if (state == swlsReady || state == swlsUnsupported) {
+				logMessage(db, state == swlsReady ? "Wi-Fi ready" :
+					"Wi-Fi INFO unsupported; using DaynaPORT without link monitoring");
+				return 1;
+			}
+			if (report) {
+				if (state == swlsError) logScsiError(db, "Wi-Fi INFO failed; retrying", device);
+				else logMessage(db, "Waiting for Wi-Fi association");
+			}
+		}
+		Delay(50);
+	}
+	logMessage(db, "Adapter not ready after startup wait; device open failed");
+	if (enabled) SCSIWifi_enable(device, 0);
+	return 0;
+}
+
 // Simple device init that saves all the real errors until later
 SAVEDS struct Device *DevInit( ASMR(d0) DEVBASEP ASMREG(d0), ASMR(a0) BPTR seglist ASMREG(a0), ASMR(a6) struct Library *_SysBase  ASMREG(a6) ) {	
 	db->db_SysBase = _SysBase;
@@ -297,7 +337,7 @@ static LONG startUnit(DEVBASEP, struct ScsiDaynaSettings* settings) {
 		// Fetch what the current network is
 		struct SCSIWifi_NetworkEntry currentNetwork;
 		if (!SCSIWifi_getNetwork(wifiDevice, &currentNetwork)) memset(&currentNetwork, 0, sizeof(struct SCSIWifi_NetworkEntry));
-		if (strcmp(currentNetwork.ssid, settings->ssid) == 0) {
+		if (currentNetwork.rssi && strcmp(currentNetwork.ssid, settings->ssid) == 0) {
 			logMessage(db, "DevOpen: Already Connected to Specified WIFI Network"); 
 			D(("scsidayna: Already connected to requested WIFI network"));
 		} else {
@@ -305,7 +345,11 @@ static LONG startUnit(DEVBASEP, struct ScsiDaynaSettings* settings) {
 			memset(&request, 0, sizeof(request));
 			strcpy(request.ssid, settings->ssid);
 			strcpy(request.key, settings->key);
-			SCSIWifi_joinNetwork(wifiDevice, &request);
+			if (!SCSIWifi_joinNetwork(wifiDevice, &request)) {
+				logScsiError(db, "Wi-Fi join failed", wifiDevice);
+				SCSIWifi_close(wifiDevice);
+				return IOERR_OPENFAIL;
+			}
 			logMessage(db, "DevOpen: Requesting to Join WIFI Network"); 
 			D(("scsidayna: Attempting to connect to WIFI network"));     
 		}
@@ -992,6 +1036,7 @@ ULONG write_frame(struct IOSana2Req *req, UBYTE* frame, SCSIWIFIDevice scsiDevic
 		req->ios2_WireError = S2WERR_GENERIC_ERROR;
 		DoEvent(db, S2EVENT_ERROR | S2EVENT_TX | S2EVENT_HARDWARE);
 		D(("SEND FAIL"));
+		logScsiError(db, "Send failed", scsiDevice);
 		return 0;
 	}
 }
@@ -1274,7 +1319,12 @@ SAVEDS void frame_proc(void) {
 	logMessagef(db,"PacketServer: Starting Wifi Device"); 
 	scsiDevice = SCSIWifi_open(&openData, &scsiResult);
 
-	if ((!packetData) || (errorDevOpen !=0) || (((char)timerPort.mp_SigBit) < 0) || (!time_req) || (!scsiDevice)) {
+	LONG linkReady = 0;
+	if (packetData && (!db->db_amigaNetMode || pendingSends) &&
+	    errorDevOpen == 0 && ((char)timerPort.mp_SigBit) >= 0 && time_req && scsiDevice)
+		linkReady = prepareLink(db, scsiDevice);
+
+	if ((!packetData) || (db->db_amigaNetMode && !pendingSends) || (errorDevOpen !=0) || (((char)timerPort.mp_SigBit) < 0) || (!time_req) || (!scsiDevice) || !linkReady) {
 		init->error = 1;
 		DoEvent(db, S2EVENT_OFFLINE);
 		db->db_online = 0;
@@ -1327,6 +1377,8 @@ SAVEDS void frame_proc(void) {
 	BYTE readSigBit = AllocSignal(-1);
 	db->db_readSigMask = (readSigBit >= 0) ? (1UL << readSigBit) : 0;
 
+	db->db_currentWifiState = 1;
+	GetSysTime(&db->db_DevStats.LastStart);
 	init->error = 0;
 	ReplyMsg((struct Message*)init);
 	unsigned long timerSignalMask = (1UL << timerPort.mp_SigBit);
@@ -1334,7 +1386,10 @@ SAVEDS void frame_proc(void) {
 	time_req->tr_node.io_Command = TR_ADDREQUEST; time_req->tr_time.tv_secs = 0;
 
 	ULONG recv = 0;
-	USHORT currentWifiState = 0;	
+	USHORT currentWifiState = 1;
+	USHORT packetEnabled = 1;
+	ULONG lastEnableAttempt = 0;
+	BOOL enableAttempted = FALSE;
 	
 	D(("Timer mask %04lx",timerSignalMask));
 	D(("SIGBREAKF_CTRL_F mask %04lx",SIGBREAKF_CTRL_F));
@@ -1345,7 +1400,7 @@ SAVEDS void frame_proc(void) {
 
 	TimeVal_Type timeLastWifiCheck = {0};
 	TimeVal_Type timeWifiCheck = {0};
-	USHORT lastWifiStatus = 1;    // assume OK, although this should get overwritten straight away
+	USHORT lastWifiStatus = 1;    // confirmed by prepareLink before device open
 	USHORT fastPollsLeft = 0;
 
 	D(("scsidayna_task: starting loop\n"));
@@ -1354,34 +1409,55 @@ SAVEDS void frame_proc(void) {
 		USHORT shouldBeEnabled = db->db_online;
 
 		GetSysTime(&timeWifiCheck);
-		// Every 5 seconds check WIFI status - but ONLY while the radio is
-		// actually enabled. A disabled DaynaPORT reports rssi 0 by definition,
-		// so polling it while offline just latched lastWifiStatus=0, which then
-		// vetoed shouldBeEnabled below and made S2_ONLINE impossible to honour:
-		// once taken offline the interface could never be brought back up.
-		// Skipping it also keeps pointless SCSI traffic off a shared bus (on the
-		// A500 the boot drive is on the same bus as the DaynaPORT).
-		if (currentWifiState && (abs(timeWifiCheck.tv_secs-timeLastWifiCheck.tv_secs)>=5)) {
-			D(("scsidayna_task: Check WIFI Status\n"));
-			struct SCSIWifi_NetworkEntry wifi;
-			if (SCSIWifi_getNetwork(scsiDevice, &wifi)) {
-				if (wifi.rssi == 0) {
-					logMessage(db,"PacketServer: Wifi not connected");
-					D(("scsidayna_task: WIFI not connected\n"));
-					lastWifiStatus = 0;
-				} else {
-					lastWifiStatus = 1;
-					logMessagef(db,"PacketServer: Wifi Connected, Signal Strength: %ld dB\n", wifi.rssi);
-					D(("scsidayna_task: WIFI connected with strength %ld dB\n", wifi.rssi));
+		/* The packet gate and Wi-Fi association are independent. Keep the
+		 * gate enabled while waiting for association; toggling it would
+		 * discard queued packets and falsely report ONLINE each time. */
+		if (packetEnabled != shouldBeEnabled &&
+		    (!enableAttempted || (ULONG)(timeWifiCheck.tv_secs - lastEnableAttempt) >= 1)) {
+			lastEnableAttempt = timeWifiCheck.tv_secs;
+			enableAttempted = TRUE;
+			if (SCSIWifi_enable(scsiDevice, shouldBeEnabled)) {
+				packetEnabled = shouldBeEnabled;
+				enableAttempted = FALSE;
+				lastWifiStatus = 0;
+				timeLastWifiCheck.tv_secs = timeWifiCheck.tv_secs - 5;
+				if (packetEnabled) {
+					ObtainSemaphore(&db->db_mcastSem);
+					db->db_mcastPending = (UWORD)((1UL << db->db_mcastCount) - 1);
+					ReleaseSemaphore(&db->db_mcastSem);
 				}
+			} else {
+				logScsiError(db, "Interface toggle failed; retrying", scsiDevice);
 			}
+		}
+
+		/* Poll while requested online, including while the link is down.
+		 * Errors are not evidence of a connected link. Unsupported INFO
+		 * is handled explicitly for wired DaynaPORT adapters. */
+		if (shouldBeEnabled && packetEnabled &&
+		    (ULONG)(timeWifiCheck.tv_secs - timeLastWifiCheck.tv_secs) >= (currentWifiState ? 5 : 1)) {
+			enum SCSIWifi_LinkState state = SCSIWifi_linkState(scsiDevice);
+			lastWifiStatus = state == swlsReady || state == swlsUnsupported;
+			if (state == swlsError) logScsiError(db, "Wi-Fi INFO failed", scsiDevice);
 			timeLastWifiCheck.tv_secs = timeWifiCheck.tv_secs;
 		}
-		// A bad wifi reading only takes us DOWN while we are actually up - it must
-		// never veto a pending online request (see above).
-		if (currentWifiState && !lastWifiStatus) shouldBeEnabled = 0;
 
-		/* MULTICAST=1: give the adapter the groups it doesn't have yet */
+		USHORT online = db->db_online && packetEnabled && lastWifiStatus;
+		if (currentWifiState != online || db->db_currentWifiState != online) {
+			currentWifiState = online;
+			db->db_currentWifiState = online;
+			if (online) {
+				GetSysTime(&db->db_DevStats.LastStart);
+				logMessage(db, "PacketServer: interface online");
+			} else {
+				fastPollsLeft = 0;
+				rejectAllPackets(db);
+				logMessage(db, "PacketServer: interface offline; waiting for recovery");
+			}
+			DoEvent(db, online ? S2EVENT_ONLINE : S2EVENT_OFFLINE);
+		}
+
+		/* MULTICAST=1: give the adapter the groups it doesn't have yet. */
 		if (settings->multicast && currentWifiState && db->db_mcastPending) {
 			USHORT i;
 			ObtainSemaphore(&db->db_mcastSem);
@@ -1390,45 +1466,11 @@ SAVEDS void frame_proc(void) {
 					struct SCSIWifi_MACAddress m;
 					memcpy(m.address, db->db_mcast[i], 6);
 					if (!SCSIWifi_addMulticastAddress(scsiDevice, &m))
-						logMessage(db, "PacketServer: adapter refused a multicast address");
+						logScsiError(db, "Multicast registration failed", scsiDevice);
 				}
 			}
 			db->db_mcastPending = 0;
 			ReleaseSemaphore(&db->db_mcastSem);
-		}
-
-		// Handle state toggle - also goes offline if theres no connections
-		if (currentWifiState != shouldBeEnabled) {
-			D(("scsidayna_task: Wifi Status Changed\n"));
-			currentWifiState = shouldBeEnabled;
-			SCSIWifi_enable(scsiDevice, shouldBeEnabled);
-			if (!shouldBeEnabled) fastPollsLeft = 0;
-			if (!shouldBeEnabled) rejectAllPackets(db);
-			if (shouldBeEnabled) {                          /* the adapter starts empty */
-				ObtainSemaphore(&db->db_mcastSem);
-				db->db_mcastPending = (UWORD)((1UL << db->db_mcastCount) - 1);
-				ReleaseSemaphore(&db->db_mcastSem);
-			}
-			if (shouldBeEnabled) {
-				GetSysTime(&db->db_DevStats.LastStart);
-				// Radio has just been re-enabled: assume good and restart the
-				// poll clock, so it re-associates before we judge the signal.
-				lastWifiStatus = 1;
-				timeLastWifiCheck.tv_secs = timeWifiCheck.tv_secs;
-			}
-			DoEvent(db, shouldBeEnabled ? S2EVENT_ONLINE : S2EVENT_OFFLINE);
-			db->db_currentWifiState = currentWifiState;
-		}
-		// Publish the hardware state on every pass, not only on a toggle.
-		// S2_OFFLINE zeroes db_currentWifiState so new requests are refused
-		// at once; a stack that cycles the unit S2_OFFLINE/S2_ONLINE to reset
-		// it (PrismNet does, when a write stalls) sends the S2_ONLINE before
-		// this task ran. Then nothing toggles - the hardware never went off -
-		// and without this the gates stayed shut: every read and write was
-		// refused "out of service" until the device was closed and reopened.
-		if (db->db_currentWifiState != currentWifiState) {
-			db->db_currentWifiState = currentWifiState;
-			if (currentWifiState) DoEvent(db, S2EVENT_ONLINE);
 		}
 
 		if (currentWifiState) {
@@ -1445,7 +1487,7 @@ SAVEDS void frame_proc(void) {
 					if (dataReceived<4) {
 						morePackets = 0;
 						D(("RECV FAILED\n"));
-						logMessage(db,"PacketServer: Warning - Batch Recv Failed from Device");
+						logScsiError(db, "Batch receive failed", scsiDevice);
 						DoEvent(db, S2EVENT_ERROR | S2EVENT_HARDWARE | S2EVENT_RX);
 					} else {
 						USHORT numPackets = ((USHORT)packetData[0] << 8) | (USHORT)packetData[1];						
@@ -1507,7 +1549,7 @@ SAVEDS void frame_proc(void) {
 					} else {
 						morePackets = 0;
 						D(("RECV FAILED\n"));
-						logMessage(db,"PacketServer: Warning - Recv Failed from Device");
+						logScsiError(db, "Receive failed", scsiDevice);
 						DoEvent(db, S2EVENT_ERROR | S2EVENT_HARDWARE | S2EVENT_RX);
 					}
 				}
@@ -1618,7 +1660,7 @@ SAVEDS void frame_proc(void) {
 					packetData[1] = counter & 0xFF;
 					if (!SCSIWifi_AmigaNetSendFrames(scsiDevice, packetData, totalSize)) {
 						D(("SEND FAIL"));
-						logMessage(db,"PacketServer: Warning - Send Failed to Device");
+						logScsiError(db, "Batch send failed", scsiDevice);
 						if (pendingSends) {							
 							for (struct IOSana2Req **req = pendingSends; req<pendingSendsSave; req++) {							
 								(*req)->ios2_Req.io_Error = S2ERR_TX_FAILURE; (*req)->ios2_WireError = S2WERR_GENERIC_ERROR;
