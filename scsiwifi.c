@@ -25,6 +25,7 @@
 
 #define SCSI_INQUIRY                        0x12
 #define SCSI_NETWORK_WIFI_READFRAME         0x08
+#define SCSI_NETWORK_READ_MAC_STATS         0x09    // DaynaPORT: MAC + 3 counters, 18 bytes
 #define SCSI_NETWORK_WIFI_WRITEFRAME        0x0A
 #define SCSI_NETWORK_WIFI_ADDMULTICAST      0x0D
 #define SCSI_NETWORK_WIFI_ENABLE            0x0E
@@ -651,12 +652,31 @@ LONG SCSIWifi_getMACAddress(SCSIWIFIDevice device, struct SCSIWifi_MACAddress* m
 
     DoIO( (struct IORequest*)dev->SCSIReq );   
 
-    if (dev->Cmd.scsi_Status) return 0;
-
-    if (dev->Cmd.scsi_Actual == 6) {
+    if (!dev->Cmd.scsi_Status && dev->Cmd.scsi_Actual == 6) {
         memcpy(macAddress->address, &dev->scsiCommand[6], 6);
         macAddress->valid = 1;
         return 1;
+    }
+
+    // The ZuluSCSI firmware's DaynaPORT mode has no 0x1C/0x09 Wi-Fi command
+    // (only the BlueSCSI's has): ask the way the Mac DaynaPORT driver does,
+    // with the standard "read MAC address and statistics" command - the MAC
+    // followed by three 32-bit counters
+    {
+        UWORD statWords[9];
+        memset(statWords, 0, sizeof(statWords));
+        SCSI_PREPCMD(dev, SCSI_NETWORK_READ_MAC_STATS, 0, 0, 0, sizeof(statWords), 0);
+        dev->Cmd.scsi_Data = statWords;
+        dev->Cmd.scsi_Length = sizeof(statWords);
+        dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
+
+        DoIO( (struct IORequest*)dev->SCSIReq );
+
+        if (!dev->Cmd.scsi_Status && dev->Cmd.scsi_Actual >= 6) {
+            memcpy(macAddress->address, statWords, 6);
+            macAddress->valid = 1;
+            return 1;
+        }
     }
     return 0;
 }

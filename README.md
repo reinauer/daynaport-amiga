@@ -42,7 +42,10 @@ installer archive into `dist/`. `make compiler_vcc=1` (or `compile.bat`) still b
 
 ### Changes
 
-- **1.10** (2026-11-16): built with GCC 16.2, fully freestanding (vbcc still works). A stray packet
+- **1.10** (2026-11-16): built with GCC 16.2, fully freestanding (vbcc still works). A ZuluSCSI
+  in DaynaPORT mode (an `NE4` image) failed to open with "can't get MAC address": its firmware only
+  has the BlueSCSI's MAC command in AmigaWIFI mode (`AM4`), so the driver now falls back to the
+  standard DaynaPORT one. A stray packet
   nobody reads (IPv6, LLDP, ...) no longer stalls the receive path for up to 20 ms, poll delays are
   timed exactly (so a `POLL0MS` below 20 ms takes effect), a second `OpenDevice` while the first was
   still starting could crash, a corrupt batch could be parsed past the buffer end,
