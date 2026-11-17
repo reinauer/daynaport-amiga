@@ -30,6 +30,9 @@
 #define DOSBase       db->db_DOSBase
 #define UtilityBase   db->db_UtilityBase
 
+/* multicast groups kept (db_mcastPending has a bit per entry) */
+#define MCAST_MAX 16
+
 struct devbase {
 	struct Library db_Lib;
 	BPTR db_SegList;            /* from Device Init */
@@ -67,9 +70,10 @@ struct devbase {
 	/* Multicast groups (S2_ADDMULTICASTADDRESS). The DaynaPORT takes them over
 	 * SCSI (command 0x0D), which only the packet server process may do: the
 	 * caller's BeginIO records the address here and signals it. */
-	UBYTE db_mcast[8][6];
+	UBYTE db_mcast[MCAST_MAX][6];
+	UWORD db_mcastRefs[MCAST_MAX];         /* adds minus deletes, per address */
 	volatile USHORT db_mcastCount;          /* addresses in the table */
-	volatile USHORT db_mcastSent;           /* how many the adapter has been given */
+	volatile UWORD db_mcastPending;         /* bit n: entry n not given to the adapter yet */
 	struct SignalSemaphore db_mcastSem;
 };
 

@@ -47,7 +47,7 @@
 #include "device.h"
 #include "macros.h"
 
-const UWORD dev_supportedcmds[] = { NSCMD_DEVICEQUERY, CMD_READ, CMD_WRITE, /*S2_SANA2HOOK, */S2_GETGLOBALSTATS, S2_BROADCAST, S2_ONEVENT, S2_READORPHAN, S2_ONLINE, S2_OFFLINE, S2_CONFIGINTERFACE, S2_GETSTATIONADDRESS, S2_DEVICEQUERY, S2_GETSPECIALSTATS, 0 };
+const UWORD dev_supportedcmds[] = { NSCMD_DEVICEQUERY, CMD_READ, CMD_WRITE, /*S2_SANA2HOOK, */S2_GETGLOBALSTATS, S2_BROADCAST, S2_ONEVENT, S2_READORPHAN, S2_ONLINE, S2_OFFLINE, S2_CONFIGINTERFACE, S2_GETSTATIONADDRESS, S2_DEVICEQUERY, S2_GETSPECIALSTATS, S2_MULTICAST, S2_ADDMULTICASTADDRESS, S2_DELMULTICASTADDRESS, 0 };
 
 
 #include <proto/exec.h>
@@ -311,7 +311,8 @@ static LONG startUnit(DEVBASEP, struct ScsiDaynaSettings* settings) {
 	SCSIWifi_close(wifiDevice);		
 	D(("scsidayna: SCSI Device OK"));
 	
-	db->db_mcastCount = db->db_mcastSent = 0;
+	db->db_mcastCount = 0;
+	db->db_mcastPending = 0;
 	db->db_online = 1;
 	db->db_currentWifiState = 0;   // the server process will bring this up
 
@@ -541,6 +542,17 @@ SAVEDS BPTR DevExpunge( ASMR(a6) DEVBASEP ASMREG(a6) ) {
 	return seglist;
 }
 
+// Index of a multicast address in the table, or db_mcastCount if it isn't there.
+// Call with db_mcastSem held.
+static USHORT findMulticast(DEVBASEP, const UBYTE* addr) {
+	USHORT i, k;
+	for (i = 0; i < db->db_mcastCount; i++) {
+		for (k = 0; k < 6 && db->db_mcast[i][k] == addr[k]; k++) ;
+		if (k == 6) break;
+	}
+	return i;
+}
+
 SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) DEVBASEP ASMREG(a6) ) {    
 	ioreq->ios2_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
 	ioreq->ios2_Req.io_Error = S2ERR_NO_ERROR;
@@ -739,20 +751,19 @@ SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) D
 			ioreq->ios2_Req.io_Error = S2ERR_BAD_ADDRESS;     /* not a group address */
 			ioreq->ios2_WireError = S2WERR_BAD_MULTICAST;
 		} else {
-			USHORT i, k;
+			USHORT i;
 			ObtainSemaphore(&db->db_mcastSem);
-			for (i = 0; i < db->db_mcastCount; i++) {
-				for (k = 0; k < 6 && db->db_mcast[i][k] == ioreq->ios2_SrcAddr[k]; k++) ;
-				if (k == 6) break;              /* already in the table */
-			}
-			if (i == db->db_mcastCount) {
-				if (db->db_mcastCount < 8) {
-					memcpy(db->db_mcast[db->db_mcastCount], ioreq->ios2_SrcAddr, 6);
-					db->db_mcastCount++;
-				} else {
-					ioreq->ios2_Req.io_Error = S2ERR_NO_RESOURCES;
-					ioreq->ios2_WireError = S2WERR_MULTICAST_FULL;
-				}
+			i = findMulticast(db, ioreq->ios2_SrcAddr);
+			if (i < db->db_mcastCount) {
+				db->db_mcastRefs[i]++;          /* already in the table */
+			} else if (db->db_mcastCount < MCAST_MAX) {
+				memcpy(db->db_mcast[i], ioreq->ios2_SrcAddr, 6);
+				db->db_mcastRefs[i] = 1;
+				db->db_mcastPending |= (UWORD)(1 << i);
+				db->db_mcastCount++;
+			} else {
+				ioreq->ios2_Req.io_Error = S2ERR_NO_RESOURCES;
+				ioreq->ios2_WireError = S2WERR_MULTICAST_FULL;
 			}
 			ReleaseSemaphore(&db->db_mcastSem);
 			/* Sent to the adapter (SCSI 0x0D) only with MULTICAST=1 in the prefs:
@@ -765,8 +776,33 @@ SAVEDS VOID DevBeginIO( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(a6) D
 		break;
 
 	case S2_DELMULTICASTADDRESS:
-		/* The DaynaPORT protocol has no "remove": the adapter keeps passing the
-		 * group up, which costs a few frames and nothing else. Accept it. */
+		/* Adds are counted (SANA-II): the group goes when every add has been
+		 * matched by a delete. The DaynaPORT protocol has no "remove", so the
+		 * adapter keeps passing the group up, which costs a few frames and
+		 * nothing else - but the slot is free again for a new group. */
+		if (!(ioreq->ios2_SrcAddr[0] & 1)) {
+			ioreq->ios2_Req.io_Error = S2ERR_BAD_ADDRESS;
+			ioreq->ios2_WireError = S2WERR_BAD_MULTICAST;
+		} else {
+			USHORT i, last;
+			ObtainSemaphore(&db->db_mcastSem);
+			i = findMulticast(db, ioreq->ios2_SrcAddr);
+			if (i < db->db_mcastCount && !--db->db_mcastRefs[i]) {
+				/* move the last entry (and its pending bit) into the hole */
+				last = db->db_mcastCount - 1;
+				if (i != last) {
+					memcpy(db->db_mcast[i], db->db_mcast[last], 6);
+					db->db_mcastRefs[i] = db->db_mcastRefs[last];
+					if (db->db_mcastPending & (1 << last))
+						db->db_mcastPending |= (UWORD)(1 << i);
+					else
+						db->db_mcastPending &= (UWORD)~(1 << i);
+				}
+				db->db_mcastPending &= (UWORD)~(1 << last);
+				db->db_mcastCount = last;
+			}
+			ReleaseSemaphore(&db->db_mcastSem);
+		}
 		break;
 
 	case S2_GETSPECIALSTATS:
@@ -1258,15 +1294,18 @@ SAVEDS void frame_proc(void) {
 		if (currentWifiState && !lastWifiStatus) shouldBeEnabled = 0;
 
 		/* MULTICAST=1: give the adapter the groups it doesn't have yet */
-		if (settings->multicast && currentWifiState && db->db_mcastSent < db->db_mcastCount) {
+		if (settings->multicast && currentWifiState && db->db_mcastPending) {
+			USHORT i;
 			ObtainSemaphore(&db->db_mcastSem);
-			while (db->db_mcastSent < db->db_mcastCount) {
-				struct SCSIWifi_MACAddress m;
-				memcpy(m.address, db->db_mcast[db->db_mcastSent], 6);
-				if (!SCSIWifi_addMulticastAddress(scsiDevice, &m))
-					logMessage(db, "PacketServer: adapter refused a multicast address");
-				db->db_mcastSent++;
+			for (i = 0; i < db->db_mcastCount; i++) {
+				if (db->db_mcastPending & (1 << i)) {
+					struct SCSIWifi_MACAddress m;
+					memcpy(m.address, db->db_mcast[i], 6);
+					if (!SCSIWifi_addMulticastAddress(scsiDevice, &m))
+						logMessage(db, "PacketServer: adapter refused a multicast address");
+				}
 			}
+			db->db_mcastPending = 0;
 			ReleaseSemaphore(&db->db_mcastSem);
 		}
 
@@ -1277,7 +1316,11 @@ SAVEDS void frame_proc(void) {
 			SCSIWifi_enable(scsiDevice, shouldBeEnabled);
 			if (!shouldBeEnabled) fastPollsLeft = 0;
 			if (!shouldBeEnabled) rejectAllPackets(db);
-			if (shouldBeEnabled) db->db_mcastSent = 0;     /* the adapter starts empty */
+			if (shouldBeEnabled) {                          /* the adapter starts empty */
+				ObtainSemaphore(&db->db_mcastSem);
+				db->db_mcastPending = (UWORD)((1UL << db->db_mcastCount) - 1);
+				ReleaseSemaphore(&db->db_mcastSem);
+			}
 			if (shouldBeEnabled) {
 				GetSysTime(&db->db_DevStats.LastStart);
 				// Radio has just been re-enabled: assume good and restart the
