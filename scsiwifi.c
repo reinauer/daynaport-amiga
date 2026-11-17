@@ -136,32 +136,33 @@ void _stoa(SHORT num, char* str) {
     *str++ = '\0';
 }
 
-// Ansi to Unsigned Short
+// Ansi to Unsigned Short - saturates at 65535 (DATASIZE=100000 used to wrap)
 USHORT _atous(char* str) {
-    USHORT out = 0;
+    ULONG out = 0;
     while (*str) {
         if ((*str >= '0') && (*str <= '9')) {
-            out *= 10;
-            out += *str - '0';
+            out = out * 10 + (*str - '0');
+            if (out > 0xFFFF) out = 0xFFFF;
         } 
         str++;
     }
-    return out;
+    return (USHORT)out;
 }
 
-// Ansi to Signed Short
+// Ansi to Signed Short - saturates at -32768/32767
 SHORT _atos(char* str) {
     LONG out = 0;
     LONG neg = 0;
     while (*str) {
         if ((*str >= '0') && (*str <= '9')) {
-            out *= 10;
-            out += *str - '0';
+            out = out * 10 + (*str - '0');
+            if (out > 32768) out = 32768;
         } else if (*str == '-') neg = 1;  // make it negative!
         str++;
     }
     if (neg) return (SHORT)(-out);
-    return out;
+    if (out > 32767) out = 32767;
+    return (SHORT)out;
 }
 
 // Looks at data, which should be TOKEN=VALUE format.
@@ -610,8 +611,10 @@ LONG SCSIWifi_getScanResults(SCSIWIFIDevice device, struct SCSIWifi_ScanResults*
     if (dev->Cmd.scsi_Actual >= 2) {
         UWORD size = results->count;   // couldn't get DIVIDE in VBCC working :(
         results->count = 0;
-        while (size >= sizeof(struct SCSIWifi_NetworkEntry)) {
+        while (size >= sizeof(struct SCSIWifi_NetworkEntry) && results->count < SCSIWIFI_MAX_NETWORK_COUNT) {
             size -= sizeof(struct SCSIWifi_NetworkEntry);
+            // the firmware doesn't promise a terminator in the 64 bytes
+            results->networks[results->count].ssid[sizeof(results->networks[0].ssid) - 1] = '\0';
             results->count++;
         }
         return 1;
@@ -685,8 +688,11 @@ LONG SCSIWifi_getNetwork(SCSIWIFIDevice device, struct SCSIWifi_NetworkEntry* co
 
     SCSI_PREPCMD(dev, SCSI_NETWORK_WIFI_CMD, SCSI_NETWORK_WIFI_OPT_INFO, 0, 0, 0, 0);
 
-    UBYTE* netBuffer = AllocVec(sizeof(struct SCSIWifi_NetworkEntry) + 2,MEMF_PUBLIC|MEMF_CLEAR);
-    if (!netBuffer) return 0;
+    // On the stack (word aligned for DMA) - this runs every 5 seconds, no
+    // need for an AllocVec/FreeVec each time
+    UWORD netWords[(sizeof(struct SCSIWifi_NetworkEntry) + 2 + 1) / 2];
+    UBYTE* netBuffer = (UBYTE*)netWords;
+    memset(netWords, 0, sizeof(netWords));
 
     dev->Cmd.scsi_Data = (APTR)netBuffer;       
     dev->Cmd.scsi_Length = sizeof(struct SCSIWifi_NetworkEntry) + 2;   
@@ -694,10 +700,7 @@ LONG SCSIWifi_getNetwork(SCSIWIFIDevice device, struct SCSIWifi_NetworkEntry* co
 
     DoIO( (struct IORequest*)dev->SCSIReq );   
 
-    if (dev->Cmd.scsi_Status) {
-        FreeVec(netBuffer);
-        return 0;
-    }
+    if (dev->Cmd.scsi_Status) return 0;
 
     // Check the result
     if (dev->Cmd.scsi_Actual > 2) {
@@ -705,12 +708,12 @@ LONG SCSIWifi_getNetwork(SCSIWIFIDevice device, struct SCSIWifi_NetworkEntry* co
         if (size > sizeof(struct SCSIWifi_NetworkEntry)) size = sizeof(struct SCSIWifi_NetworkEntry);
         if (size > dev->Cmd.scsi_Actual-2) size = dev->Cmd.scsi_Actual - 2;
         memcpy(connection, &netBuffer[2], size);
-        FreeVec(netBuffer);
+        // the firmware doesn't promise a terminator in the 64 bytes
+        connection->ssid[sizeof(connection->ssid) - 1] = '\0';
 
         return (size == sizeof(struct SCSIWifi_NetworkEntry)) ? 1 : 0;
     }
 
-    FreeVec(netBuffer);
     return 0;
 }
 
