@@ -131,11 +131,21 @@ SAVEDS struct Device *DevInit( ASMR(d0) DEVBASEP ASMREG(d0), ASMR(a0) BPTR segli
 	db->db_UtilityBase = NULL;
 	db->db_scsiSettings = NULL;
 	db->db_online = 0;
-	db->db_decrementCountOnFail = 0;
 	db->db_quit = FALSE;
 	db->db_debugConsole = 0;
 	db->db_amigaNetMode = 0;
 	db->db_currentWifiState = 0;
+	db->db_Proc = NULL;
+
+	// The request lists and their semaphores live as long as the device: an
+	// opener's BeginIO must never find them half set up
+	NewList(&db->db_ReadList);			InitSemaphore(&db->db_ReadListSem);
+	NewList(&db->db_WriteList);			InitSemaphore(&db->db_WriteListSem);
+	NewList(&db->db_EventList);			InitSemaphore(&db->db_EventListSem);
+	NewList(&db->db_ReadOrphanList); 	InitSemaphore(&db->db_ReadOrphanListSem);
+	InitSemaphore(&db->db_ProcSem);
+	InitSemaphore(&db->db_mcastSem);
+	InitSemaphore(&db->db_OpenSem);
 
 	DOSBase = OpenLibrary("dos.library", 36);
 	if (!DOSBase) {
@@ -187,22 +197,166 @@ SAVEDS struct Device *DevInit( ASMR(d0) DEVBASEP ASMREG(d0), ASMR(a0) BPTR segli
 	return (struct Device*)db;
 }
 
-// Return an error and clean up
+// Return an error
 LONG returnError(struct devbase* db, struct IOSana2Req *ioreq, LONG errorCode) {
 	ioreq->ios2_Req.io_Error = errorCode; 
 	ioreq->ios2_Req.io_Unit = (struct Unit *)0;   
 	ioreq->ios2_Req.io_Device = (struct Device *)0;	
-	if (db->db_decrementCountOnFail) {
-		db->db_decrementCountOnFail = 0;
-		db->db_Lib.lib_OpenCnt--;
-	}
 	return errorCode;
+}
+
+
+// Bring the unit up for its first opener: find and set up the adapter, then
+// start the packet server process. Called with db_OpenSem held.
+static LONG startUnit(DEVBASEP, struct ScsiDaynaSettings* settings) {
+	SCSIWIFIDevice* wifiDevice = NULL;
+	struct SCSIDevice_OpenData openData;
+	openData.sysBase = (struct ExecBase*)SysBase;
+	openData.utilityBase = (void*)UtilityBase;
+	openData.dosBase = (void*)DOSBase;
+	openData.deviceDriverName = settings->deviceName;
+	openData.deviceID = settings->deviceID;
+	openData.scsiMode = settings->scsiMode;
+	enum SCSIWifi_OpenResult scsiResult;
+
+	// Open it
+	if ((settings->deviceID<0) || (settings->deviceID>7)) {			
+		D(("scsidayna: Searching for DaynaPORT Device to Configure\n"));
+		// Highly likely it will be on 4 as its in the example so start there!
+		for (USHORT deviceID=4; deviceID<4+8; deviceID++) {
+			openData.deviceID = deviceID & 7;  
+			D(("scsidayna: Searching on DeviceID %ld\n", openData.deviceID));
+			wifiDevice = SCSIWifi_open(&openData, &scsiResult);
+			if (wifiDevice) {
+				settings->deviceID = openData.deviceID;
+				logMessagef(db, "DevOpen: Detected Network Device on Unit %ld", openData.deviceID );
+				break;
+			}
+		}
+	} else {			
+		wifiDevice = SCSIWifi_open(&openData, &scsiResult);
+	}
+		
+	if (!wifiDevice) {
+		switch (scsiResult) {
+			case sworOpenDeviceFailed: 	logMessagef(db, "DevOpen: Failed to open SCSI device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;  
+			case sworOutOfMem:  		logMessagef(db, "DevOpen: Out of memory opening SCSI device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;
+			case sworInquireFail:      	logMessagef(db, "DevOpen: Inquiry of SCSI device failed \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;
+			case sworNotDaynaDevice:   	logMessagef(db, "DevOpen: Device is not a DaynaPort SCSI device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;
+			default: logMessagef(db, "DevOpen:  Unknown error occured opening device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;
+		}
+		return IOERR_OPENFAIL;
+	}
+	
+	if (scsiResult == sworGreat) {
+		db->db_amigaNetMode = 1;
+		logMessagef(db, "DevOpen: AmigaNET Interface Detected"); 
+		// Device open. Fetch MAC address
+		struct SCSIWifi_DeviceInfo devInfo;
+		if (!SCSIWifi_getDeviceInfo(wifiDevice, &devInfo)) {
+			logMessagef(db, "DevOpen: Failed to fetch device info from Device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); 
+			SCSIWifi_close(wifiDevice);
+			return IOERR_OPENFAIL;
+		}
+		// Take a copy of the MAC Address
+		memcpy(HW_MAC, devInfo.macAddress, 6);
+		db->db_maxPacketsSize = devInfo.maxPacketsSize;
+		db->db_maxPackets = devInfo.maxPackets;
+		D(("scsidayna: MAC Address stored, checking WIFI status"));
+		logMessagef(db, "DevOpen: Max Data Transfer Size: %ld  (limited to %ld), Max Packets: %ld",db->db_maxPacketsSize, settings->maxDataSize, db->db_maxPackets);
+		if (db->db_maxPacketsSize > settings->maxDataSize) db->db_maxPacketsSize = settings->maxDataSize;
+		// Never allow less than one full-size packet plus batch headers - a value of 0
+		// (bad config or firmware) would underflow the batch buffer arithmetic
+		if (db->db_maxPacketsSize < SCSIWIFI_PACKET_MAX_SIZE + 8) db->db_maxPacketsSize = SCSIWIFI_PACKET_MAX_SIZE + 8;
+		if (db->db_maxPackets < 1) db->db_maxPackets = 1;
+		// Ensure db->db_maxPacketsSize is even
+		if (db->db_maxPacketsSize&1) db->db_maxPacketsSize++;
+	} else {
+		db->db_amigaNetMode = 0;
+		db->db_maxPacketsSize = 0;
+		db->db_maxPackets = 0;
+		logMessagef(db, "DevOpen: Legacy Daynaport Interface Detected (Upgrade SCSI Firmware)"); 
+		// Device open. Fetch MAC address
+		struct SCSIWifi_MACAddress macAddress;
+		if (!SCSIWifi_getMACAddress(wifiDevice, &macAddress)) {
+			logMessagef(db, "DevOpen: Failed to fetch MAC Address from Device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); 
+			SCSIWifi_close(wifiDevice);
+			return IOERR_OPENFAIL;
+		}
+		// Take a copy of the MAC Address
+		D(("scsidayna: MAC Address stored, checking WIFI status"));
+		memcpy(HW_MAC, macAddress.address, 6);
+	}				
+	logMessagef(db, "DevOpen: MAC Address %02lx:%02lx:%02lx:%02lx:%02lx:%02lx",HW_MAC[0],HW_MAC[1],HW_MAC[2],HW_MAC[3],HW_MAC[4],HW_MAC[5]); 
+		
+	
+	// Should we be attempting to connect to wifi?
+	if ((settings->autoConnect) && (strlen(settings->ssid))) {
+		// Fetch what the current network is
+		struct SCSIWifi_NetworkEntry currentNetwork;
+		if (!SCSIWifi_getNetwork(wifiDevice, &currentNetwork)) memset(&currentNetwork, 0, sizeof(struct SCSIWifi_NetworkEntry));
+		if (strcmp(currentNetwork.ssid, settings->ssid) == 0) {
+			logMessage(db, "DevOpen: Already Connected to Specified WIFI Network"); 
+			D(("scsidayna: Already connected to requested WIFI network"));
+		} else {
+			struct SCSIWifi_JoinRequest request;
+			strcpy(request.ssid, settings->ssid);
+			strcpy(request.key, settings->key);
+			SCSIWifi_joinNetwork(wifiDevice, &request);
+			logMessage(db, "DevOpen: Requesting to Join WIFI Network"); 
+			D(("scsidayna: Attempting to connect to WIFI network"));     
+		}
+	}
+	SCSIWifi_close(wifiDevice);		
+	D(("scsidayna: SCSI Device OK"));
+	
+	db->db_mcastCount = db->db_mcastSent = 0;
+	db->db_online = 1;
+	db->db_currentWifiState = 0;   // the server process will bring this up
+
+	struct ProcInit init;
+	struct MsgPort *port;
+
+	if ((port = CreateMsgPort())) {
+		BOOL procFailed = TRUE;
+		D(("scsidayna: Starting Server"));
+		db->db_quit = FALSE;
+		/* Plain tag array: the varargs CreateNewProcTags() stub would use a global DOSBase */
+		struct TagItem procTags[] = {
+			{ NP_Entry,    (ULONG)frame_proc },
+			{ NP_Name,     (ULONG)frame_proc_name },
+			{ NP_Priority, 0 },
+			{ TAG_DONE,    0 }
+		};
+		if ((db->db_Proc = CreateNewProc(procTags))) {
+			init.error = 1;
+			init.db = db;
+			init.msg.mn_Length = sizeof(init);
+			init.msg.mn_ReplyPort = port;
+
+			D(("scsidayna: handover db: %lx",init.db));
+			PutMsg(&db->db_Proc->pr_MsgPort, (struct Message*)&init);
+			WaitPort(port);
+			GetMsg(port);
+
+			procFailed = init.error ? TRUE : FALSE;
+			if (procFailed) db->db_Proc = NULL;  // the process has already exited
+		}
+		DeleteMsgPort(port);
+		if (procFailed) {
+			logMessagef(db,"DevOpen: Process startup error");
+			return IOERR_OPENFAIL;
+		}
+	} else {
+		logMessagef(db,"DevOpen: Failed to create message port");
+		return IOERR_OPENFAIL;
+	}
+	return 0;
 }
 
 // Device open!
 SAVEDS LONG DevOpen( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(d0) ULONG unit ASMREG(d0), ASMR(d1) ULONG flags ASMREG(d1), ASMR(a6) DEVBASEP ASMREG(a6) ) {		
 	struct ScsiDaynaSettings* settings = (struct ScsiDaynaSettings*)db->db_scsiSettings;
-	db->db_decrementCountOnFail = 0;		
 			
 	// Only unit 0 exists - opening any other unit would skip all the one-time
 	// initialisation below and leave the request lists unusable
@@ -222,162 +376,36 @@ SAVEDS LONG DevOpen( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(d0) ULON
 		return returnError(db, ioreq, IOERR_OPENFAIL);
 	}
 		
-	db->db_Lib.lib_OpenCnt++; /* avoid Expunge, see below for separate "unit" open count */			
-	db->db_decrementCountOnFail = 1;
-	if (unit==0 && db->db_Lib.lib_OpenCnt==1) {		
-		SCSIWIFIDevice* wifiDevice = NULL;
-		struct SCSIDevice_OpenData openData;
-		openData.sysBase = (struct ExecBase*)SysBase;
-		openData.utilityBase = (void*)UtilityBase;
-		openData.dosBase = (void*)DOSBase;
-		openData.deviceDriverName = settings->deviceName;
-		openData.deviceID = settings->deviceID;
-		openData.scsiMode = settings->scsiMode;
-		enum SCSIWifi_OpenResult scsiResult;
-	
-		// Open it
-		if ((settings->deviceID<0) || (settings->deviceID>7)) {			
-			D(("scsidayna: Searching for DaynaPORT Device to Configure\n"));
-			// Highly likely it will be on 4 as its in the example so start there!
-			for (USHORT deviceID=4; deviceID<4+8; deviceID++) {
-				openData.deviceID = deviceID & 7;  
-				D(("scsidayna: Searching on DeviceID %ld\n", openData.deviceID));
-				wifiDevice = SCSIWifi_open(&openData, &scsiResult);
-				if (wifiDevice) {
-					settings->deviceID = openData.deviceID;
-					logMessagef(db, "DevOpen: Detected Network Device on Unit %ld", openData.deviceID );
-					break;
-				}
-			}
-		} else {			
-			wifiDevice = SCSIWifi_open(&openData, &scsiResult);
-		}
-			
-		if (!wifiDevice) {
-			switch (scsiResult) {
-				case sworOpenDeviceFailed: 	logMessagef(db, "DevOpen: Failed to open SCSI device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;  
-				case sworOutOfMem:  		logMessagef(db, "DevOpen: Out of memory opening SCSI device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;
-				case sworInquireFail:      	logMessagef(db, "DevOpen: Inquiry of SCSI device failed \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;
-				case sworNotDaynaDevice:   	logMessagef(db, "DevOpen: Device is not a DaynaPort SCSI device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;
-				default: logMessagef(db, "DevOpen:  Unknown error occured opening device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); break;
-			}
-			return returnError(db, ioreq, IOERR_OPENFAIL);
-		}
-		
-		if (scsiResult == sworGreat) {
-			db->db_amigaNetMode = 1;
-			logMessagef(db, "DevOpen: AmigaNET Interface Detected"); 
-			// Device open. Fetch MAC address
-			struct SCSIWifi_DeviceInfo devInfo;
-			if (!SCSIWifi_getDeviceInfo(wifiDevice, &devInfo)) {
-				logMessagef(db, "DevOpen: Failed to fetch device info from Device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); 
-				SCSIWifi_close(wifiDevice);
-				return returnError(db, ioreq, IOERR_OPENFAIL);
-			}
-			// Take a copy of the MAC Address
-			memcpy(HW_MAC, devInfo.macAddress, 6);
-			db->db_maxPacketsSize = devInfo.maxPacketsSize;
-			db->db_maxPackets = devInfo.maxPackets;
-			D(("scsidayna: MAC Address stored, checking WIFI status"));
-			logMessagef(db, "DevOpen: Max Data Transfer Size: %ld  (limited to %ld), Max Packets: %ld",db->db_maxPacketsSize, settings->maxDataSize, db->db_maxPackets);
-			if (db->db_maxPacketsSize > settings->maxDataSize) db->db_maxPacketsSize = settings->maxDataSize;
-			// Never allow less than one full-size packet plus batch headers - a value of 0
-			// (bad config or firmware) would underflow the batch buffer arithmetic
-			if (db->db_maxPacketsSize < SCSIWIFI_PACKET_MAX_SIZE + 8) db->db_maxPacketsSize = SCSIWIFI_PACKET_MAX_SIZE + 8;
-			if (db->db_maxPackets < 1) db->db_maxPackets = 1;
-			// Ensure db->db_maxPacketsSize is even
-			if (db->db_maxPacketsSize&1) db->db_maxPacketsSize++;
-		} else {
-			db->db_amigaNetMode = 0;
-			db->db_maxPacketsSize = 0;
-			db->db_maxPackets = 0;
-			logMessagef(db, "DevOpen: Legacy Daynaport Interface Detected (Upgrade SCSI Firmware)"); 
-			// Device open. Fetch MAC address
-			struct SCSIWifi_MACAddress macAddress;
-			if (!SCSIWifi_getMACAddress(wifiDevice, &macAddress)) {
-				logMessagef(db, "DevOpen: Failed to fetch MAC Address from Device \"%s\" ID %ld\n", settings->deviceName, settings->deviceID); 
-				SCSIWifi_close(wifiDevice);
-				return returnError(db, ioreq, IOERR_OPENFAIL);
-			}
-			// Take a copy of the MAC Address
-			D(("scsidayna: MAC Address stored, checking WIFI status"));
-			memcpy(HW_MAC, macAddress.address, 6);
-		}				
-		logMessagef(db, "DevOpen: MAC Address %02lx:%02lx:%02lx:%02lx:%02lx:%02lx",HW_MAC[0],HW_MAC[1],HW_MAC[2],HW_MAC[3],HW_MAC[4],HW_MAC[5]); 
-			
-		
-		// Should we be attempting to connect to wifi?
-		if ((settings->autoConnect) && (strlen(settings->ssid))) {
-			// Fetch what the current network is
-			struct SCSIWifi_NetworkEntry currentNetwork;
-			if (!SCSIWifi_getNetwork(wifiDevice, &currentNetwork)) memset(&currentNetwork, 0, sizeof(struct SCSIWifi_NetworkEntry));
-			if (strcmp(currentNetwork.ssid, settings->ssid) == 0) {
-				logMessage(db, "DevOpen: Already Connected to Specified WIFI Network"); 
-				D(("scsidayna: Already connected to requested WIFI network"));
-			} else {
-				struct SCSIWifi_JoinRequest request;
-				strcpy(request.ssid, settings->ssid);
-				strcpy(request.key, settings->key);
-				SCSIWifi_joinNetwork(wifiDevice, &request);
-				logMessage(db, "DevOpen: Requesting to Join WIFI Network"); 
-				D(("scsidayna: Attempting to connect to WIFI network"));     
-			}
-		}
-		SCSIWifi_close(wifiDevice);		
-		D(("scsidayna: SCSI Device OK for %ld",unit));
-		
-		NewList(&db->db_ReadList);			InitSemaphore(&db->db_ReadListSem);
-		NewList(&db->db_WriteList);			InitSemaphore(&db->db_WriteListSem);
-		NewList(&db->db_EventList);			InitSemaphore(&db->db_EventListSem);
-		NewList(&db->db_ReadOrphanList); 	InitSemaphore(&db->db_ReadOrphanListSem);
+	// Count the opener at once, before anything can wait: this is what keeps
+	// DevExpunge from freeing the base under an opener that is still blocked
+	// on db_OpenSem
+	db->db_Lib.lib_OpenCnt++;
 
-		InitSemaphore(&db->db_ProcSem);
-		InitSemaphore(&db->db_mcastSem);
-		db->db_mcastCount = db->db_mcastSent = 0;
-		db->db_online = 1;
-		db->db_currentWifiState = 0;   // the server process will bring this up
+	// Every opener gets its own buffer management block; allocate it before the
+	// unit is started so this can't fail after the packet process is running
+	struct BufferManagement *bm = (struct BufferManagement*)AllocVec(sizeof(struct BufferManagement), MEMF_CLEAR|MEMF_PUBLIC);
+	if (!bm) {
+		db->db_Lib.lib_OpenCnt--;
+		return returnError(db, ioreq, IOERR_OPENFAIL);
+	}
 
-		struct ProcInit init;
-		struct MsgPort *port;
-
-		if ((port = CreateMsgPort())) {
-			BOOL procFailed = TRUE;
-			D(("scsidayna: Starting Server"));
-			db->db_quit = FALSE;
-			/* Plain tag array: the varargs CreateNewProcTags() stub would use a global DOSBase */
-			struct TagItem procTags[] = {
-				{ NP_Entry,    (ULONG)frame_proc },
-				{ NP_Name,     (ULONG)frame_proc_name },
-				{ NP_Priority, 0 },
-				{ TAG_DONE,    0 }
-			};
-			if ((db->db_Proc = CreateNewProc(procTags))) {
-				init.error = 1;
-				init.db = db;
-				init.msg.mn_Length = sizeof(init);
-				init.msg.mn_ReplyPort = port;
-
-				D(("scsidayna: handover db: %lx",init.db));
-				PutMsg(&db->db_Proc->pr_MsgPort, (struct Message*)&init);
-				WaitPort(port);
-				GetMsg(port);
-
-				procFailed = init.error ? TRUE : FALSE;
-				if (procFailed) db->db_Proc = NULL;  // the process has already exited
-			}
-			DeleteMsgPort(port);
-			if (procFailed) {
-				logMessagef(db,"DevOpen: Process startup error");
-				return returnError(db, ioreq, IOERR_OPENFAIL);
-			}
-		} else {
-			logMessagef(db,"DevOpen: Failed to create message port");
-			return returnError(db, ioreq, IOERR_OPENFAIL);
+	// One open (or close) at a time. Starting the unit waits for SCSI I/O and
+	// for the packet process, which breaks exec's Forbid: a second opener used
+	// to slip in here, see an open count of 2, skip the setup and get a "ready"
+	// device whose process didn't exist yet.
+	ObtainSemaphore(&db->db_OpenSem);
+	if (!db->db_Proc) {
+		LONG err = startUnit(db, settings);
+		if (err) {
+			ReleaseSemaphore(&db->db_OpenSem);
+			FreeVec(bm);
+			db->db_Lib.lib_OpenCnt--;
+			return returnError(db, ioreq, err);
 		}
 	}
-	
-	struct BufferManagement *bm;
-	if ((bm = (struct BufferManagement*)AllocVec(sizeof(struct BufferManagement), MEMF_CLEAR|MEMF_PUBLIC))) {
+	ReleaseSemaphore(&db->db_OpenSem);
+
+	{
 		struct TagItem *bufTags = (struct TagItem *)ioreq->ios2_BufferManagement;
 		bm->bm_CopyToBuffer     = (BMFunc)GetTagData(S2_CopyToBuff, 0, bufTags);
 		bm->bm_CopyFromBuffer   = (BMFunc)GetTagData(S2_CopyFromBuff, 0, bufTags);
@@ -391,8 +419,6 @@ SAVEDS LONG DevOpen( ASMR(a1) struct IOSana2Req *ioreq ASMREG(a1), ASMR(d0) ULON
 		ioreq->ios2_Req.io_Error = 0;
 		ioreq->ios2_Req.io_Unit = (struct Unit *)unit; // not a real pointer, but id integer
 		ioreq->ios2_Req.io_Device = (struct Device *)db;
-	}else{
-		return returnError(db, ioreq, IOERR_OPENFAIL);
 	}
 		
 	ioreq->ios2_Req.io_Message.mn_Node.ln_Type = NT_REPLYMSG;
@@ -442,6 +468,10 @@ SAVEDS BPTR DevClose( ASMR(a1) struct IORequest *ioreq ASMREG(a1), ASMR(a6) DEVB
 	logMessagef(db,"DevClose: enter, open count %ld", (LONG)db->db_Lib.lib_OpenCnt);
 	if (!ioreq) return ret;
 
+	// Serialised with DevOpen: stopping the process waits, and an opener must
+	// not start the unit while it is still going down
+	ObtainSemaphore(&db->db_OpenSem);
+
 	// Free the BufferManagement we allocated for this opener in DevOpen.
 	// Anything this opener left queued still points AT that block, and the packet
 	// server task calls through it (bm_CopyToBuffer/bm_CopyFromBuffer) for every
@@ -475,6 +505,7 @@ SAVEDS BPTR DevClose( ASMR(a1) struct IORequest *ioreq ASMREG(a1), ASMR(a6) DEVB
 			logMessage(db,"DevClose: packet task stopped");
 		}
 	}
+	ReleaseSemaphore(&db->db_OpenSem);
 
 	ioreq->io_Device = (0);
 	ioreq->io_Unit   = (struct Unit *)(-1);

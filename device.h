@@ -40,7 +40,6 @@ struct devbase {
 	struct Sana2DeviceStats db_DevStats;
 	
 	BPTR db_debugConsole;  // I couldnt get any form of S2_SANA2HOOK working	
-	BOOL db_decrementCountOnFail;
 	BOOL db_quit;
 	BOOL db_timerUsed ;
 		
@@ -62,6 +61,9 @@ struct devbase {
 	struct SignalSemaphore db_ReadOrphanListSem;
 	struct Process* db_Proc;
 	struct SignalSemaphore db_ProcSem;
+	/* Held across DevOpen and DevClose: both wait (SCSI I/O, process start
+	 * and stop), which breaks exec's Forbid and lets another opener in. */
+	struct SignalSemaphore db_OpenSem;
 	/* Multicast groups (S2_ADDMULTICASTADDRESS). The DaynaPORT takes them over
 	 * SCSI (command 0x0D), which only the packet server process may do: the
 	 * caller's BeginIO records the address here and signals it. */
