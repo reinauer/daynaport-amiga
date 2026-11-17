@@ -109,7 +109,7 @@ where:
 - SSID The SSID/Wifi name to connect to if autoconnect=1
 - KEY the wifi key/password
 - DATASIZE With the new Scsi firmware, you can bulk-transfer packet data upto this amount for increased speed (defaults to 8192, some devices might not support different sizes)
-- DEBUG 0/1 Causes a console window to appear to help debug issues with the driver, disable when sorted or it slows things down
+- DEBUG 0/1/2 Causes a console window to appear to help debug issues with the driver, disable when sorted or it slows things down. 2 also appends every line to `SYS:scsidayna.log` (which survives a crash, but costs a disk access per line and grows until deleted)
 - MULTICAST 0/1 (fork, 1.6+) Gives the multicast groups a TCP/IP stack asks for to the adapter, so mDNS names resolve. Default 0.
 - AGGRESSIVE 0/1 Enables agressive mode, driver run without 1ms wait - experimental - may scale with processor/priority
 - POLLMS Idle receive poll delay in milliseconds when no packet traffic was recently received (defaults to 80)

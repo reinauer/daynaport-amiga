@@ -266,7 +266,9 @@ LONG SCSIWifi_loadSettings(void *utilityBase, void* dosBase, struct ScsiDaynaSet
                             case 5: strcpy_s(settings->ssid, value, 64); break;
                             case 6: strcpy_s(settings->key, value, 64); break;
 							case 7: settings->maxDataSize = _atous(value); break;   // bounded by normalizeSettings()
-							case 8: settings->debug = _atos(value) != 0; break;
+							case 8: settings->debug = _atous(value);       // 1 console, 2 also SYS:scsidayna.log
+									if (settings->debug > 2) settings->debug = 2;
+									break;
 							case 9: settings->aggressive = _atos(value) != 0; break;
 							case 10: settings->pollMs = _atous(value); break;
 							case 11: settings->poll0Ms = _atous(value); break;

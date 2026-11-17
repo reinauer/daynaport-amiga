@@ -86,7 +86,8 @@ void rejectAllPackets( DEVBASEP );
 
 // Append one line to a log FILE, opening and closing it per line so the write is
 // flushed to disk before whatever comes next gets a chance to crash the machine.
-// The console window dies with a reset; this survives it.
+// The console window dies with a reset; this survives it. Only with DEBUG=2: it
+// costs a disk access per line and the file grows without limit.
 static void logToFile(struct devbase* db, const char *message) {
 	BPTR fh = Open("SYS:scsidayna.log", MODE_READWRITE);
 	if (!fh) return;
@@ -106,14 +107,14 @@ void logMessage(struct devbase* db, const char *message) {
 		FPuts(db->db_debugConsole, message);
 		FPuts(db->db_debugConsole, "\n");
 	}
-	logToFile(db, message);
+	if (settings->debug >= 2) logToFile(db, message);
 }
 
 // Formatted logging to console window
 static const UWORD stuffChar[] = {0x16c0, 0x4e75};
 void logMessagef(struct devbase* db, const char *messageFormat, ...) {
 	struct ScsiDaynaSettings* settings = (struct ScsiDaynaSettings*)db->db_scsiSettings;
-	if (!settings->debug) return;
+	if (!settings || !settings->debug) return;
 	// Must be large enough for any format string plus a full-length deviceName (107 chars) or SSID
 	char buf[256];
     va_list args;
@@ -512,7 +513,6 @@ SAVEDS BPTR DevClose( ASMR(a1) struct IORequest *ioreq ASMREG(a1), ASMR(a6) DEVB
 	ioreq->io_Device = (0);
 	ioreq->io_Unit   = (struct Unit *)(-1);
 	if (db->db_Lib.lib_Flags & LIBF_DELEXP) {
-		logMessage(db,"DevClose: delayed expunge pending, expunging now");
 		ret = DevExpunge(db);
 	} else {
 		logMessage(db,"DevClose: done (no expunge)");
@@ -524,16 +524,14 @@ SAVEDS BPTR DevClose( ASMR(a1) struct IORequest *ioreq ASMREG(a1), ASMR(a6) DEVB
 SAVEDS BPTR DevExpunge( ASMR(a6) DEVBASEP ASMREG(a6) ) {
 	BPTR seglist = db->db_SegList;
 
-	logMessagef(db,"DevExpunge: enter, open count %ld", (LONG)db->db_Lib.lib_OpenCnt);
+	// No logging in here: exec calls this from its low-memory handler, under
+	// Forbid, where DOS I/O (console or log file) can deadlock the machine
 	if( db->db_Lib.lib_OpenCnt ) {
 		db->db_Lib.lib_Flags |= LIBF_DELEXP;
-		logMessage(db,"DevExpunge: still open, deferred");
 		return 0;
 	}
 
 	D(("scsidayna: Remove Device Node...\n"));
-	// Last chance to log: freeInit() closes DOSBase and frees the settings
-	logMessage(db,"DevExpunge: removing node and freeing base (last log line)");
 	Remove((struct Node*)db);
 
 	freeInit(db);

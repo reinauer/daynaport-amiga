@@ -101,7 +101,8 @@ struct ScsiDaynaSettings {
   USHORT poll0Ms;
   USHORT fastHold;
   USHORT txBurst;
-  // If debug is enabled - creates a console window and shows the output
+  // If debug is enabled - creates a console window and shows the output;
+  // 2 also appends every line to SYS:scsidayna.log
   UBYTE debug;
   UBYTE aggressive;
   // Send multicast groups to the adapter (DaynaPORT SCSI command 0x0D). Off by
