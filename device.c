@@ -1253,7 +1253,9 @@ SAVEDS void frame_proc(void) {
 
 	if (((char)timerPort.mp_SigBit)>=0) {
 		time_req = (TimeRequest_Type*) CreateIORequest(&timerPort, sizeof (TimeRequest_Type));
-		if (time_req) errorDevOpen = OpenDevice("timer.device", UNIT_VBLANK, (struct IORequest *)time_req, 0);
+		// UNIT_MICROHZ: UNIT_VBLANK rounds every wait up to a whole video frame
+		// (20 ms PAL, 16.7 ms NTSC), so POLL0MS values below that did nothing
+		if (time_req) errorDevOpen = OpenDevice("timer.device", UNIT_MICROHZ, (struct IORequest *)time_req, 0);
 	}
 	
 	struct ScsiDaynaSettings* settings = (struct ScsiDaynaSettings*)db->db_scsiSettings;

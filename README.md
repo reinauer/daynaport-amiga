@@ -113,7 +113,7 @@ where:
 - MULTICAST 0/1 (fork, 1.6+) Gives the multicast groups a TCP/IP stack asks for to the adapter, so mDNS names resolve. Default 0.
 - AGGRESSIVE 0/1 Enables agressive mode, driver run without 1ms wait - experimental - may scale with processor/priority
 - POLLMS Idle receive poll delay in milliseconds when no packet traffic was recently received (defaults to 80)
-- POLL0MS Fast receive poll delay in milliseconds while packet traffic is active (defaults to 20, use 0 to skip the wait)
+- POLL0MS Fast receive poll delay in milliseconds while packet traffic is active (defaults to 20, use 0 to skip the wait). From 1.10 the delays are timed exactly, so values below one video frame (20 ms) take effect too: lower values cut latency at the cost of more polling on the SCSI bus
 - FASTHOLD Number of empty receive polls to keep using POLL0MS after packet traffic stops (defaults to 16)
 - TXBURST Maximum packets to send before giving receive polling another turn (0 uses the firmware/default limit, otherwise 1-64)
 
