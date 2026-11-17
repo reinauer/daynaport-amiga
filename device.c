@@ -269,8 +269,9 @@ static LONG startUnit(DEVBASEP, struct ScsiDaynaSettings* settings) {
 		// (bad config or firmware) would underflow the batch buffer arithmetic
 		if (db->db_maxPacketsSize < SCSIWIFI_PACKET_MAX_SIZE + 8) db->db_maxPacketsSize = SCSIWIFI_PACKET_MAX_SIZE + 8;
 		if (db->db_maxPackets < 1) db->db_maxPackets = 1;
-		// Ensure db->db_maxPacketsSize is even
-		if (db->db_maxPacketsSize&1) db->db_maxPacketsSize++;
+		// Keep db->db_maxPacketsSize even - by rounding DOWN: rounding up asked
+		// the adapter for more than it supports, and turned 65535 into 0
+		db->db_maxPacketsSize &= ~1;
 	} else {
 		db->db_amigaNetMode = 0;
 		db->db_maxPacketsSize = 0;
