@@ -129,6 +129,19 @@ struct STRUCT_ALIGN16 SCSIWifi_ScanResults {
 // Device handle - yeah you don't need to know what's inside
 typedef void* SCSIWIFIDevice;
 
+/* Result of the last SCSI command, without packet data or credentials. */
+struct SCSIWifi_Result {
+    LONG ioError;
+    ULONG requested, actual;
+    UBYTE opcode, subcommand, status;
+    UBYTE senseKey, asc, ascq;
+    UBYTE senseValid;
+};
+
+enum SCSIWifi_LinkState { swlsError = -1, swlsWaiting, swlsReady, swlsUnsupported };
+void SCSIWifi_getResult(SCSIWIFIDevice device, struct SCSIWifi_Result *result);
+enum SCSIWifi_LinkState SCSIWifi_linkState(SCSIWIFIDevice device);
+
 // Internal SCSI device data
 struct SCSIDevice_OpenData {
     struct ExecBase *sysBase;            // Library needs these

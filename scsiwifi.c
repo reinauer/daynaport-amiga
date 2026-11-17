@@ -79,6 +79,8 @@ struct SCSIDevice {
     char senseData[20];
     UBYTE* scsiCommand;    // buffer to hold command, 16-bit aligned (12 bytes)
     USHORT scsiMode;
+	struct SCSIWifi_Result result;
+	UBYTE linkInfoUnsupported;
 	USHORT isAmigaWIFI;    // Set to 1 if this uses the new AmigaWIFI interface rather than the Daynaport one
 };
 
@@ -88,6 +90,48 @@ struct SCSIDevice {
 
 
 typedef struct SCSIDevice* LSCSIDevice;
+
+/* A GOOD SCSI status does not override an Exec I/O error. */
+static void runCommand(LSCSIDevice dev) {
+    struct SCSIWifi_Result *r = &dev->result;
+    memset(r, 0, sizeof(*r));
+    r->opcode = dev->scsiCommand[0];
+    r->subcommand = dev->scsiCommand[1];
+    r->requested = dev->Cmd.scsi_Length;
+    r->ioError = DoIO((struct IORequest *)dev->SCSIReq);
+    r->status = dev->Cmd.scsi_Status;
+    r->actual = dev->Cmd.scsi_Actual;
+    if (dev->Cmd.scsi_SenseActual >= 14 &&
+        (((UBYTE)dev->senseData[0] & 0x7e) == 0x70)) {
+        r->senseValid = 1;
+        r->senseKey = dev->senseData[2] & 15;
+        r->asc = dev->senseData[12];
+        r->ascq = dev->senseData[13];
+    }
+}
+
+void SCSIWifi_getResult(SCSIWIFIDevice device, struct SCSIWifi_Result *result) {
+    LSCSIDevice dev = (LSCSIDevice)device;
+    *result = dev->result;
+}
+
+enum SCSIWifi_LinkState SCSIWifi_linkState(SCSIWIFIDevice device) {
+    LSCSIDevice dev = (LSCSIDevice)device;
+    struct SCSIWifi_NetworkEntry net;
+    if (dev->linkInfoUnsupported) return swlsUnsupported;
+    if (SCSIWifi_getNetwork(device, &net))
+        return net.rssi ? swlsReady : swlsWaiting;
+    /* A wired DaynaPORT need not implement Wi-Fi INFO. Do not confuse a
+     * transport error or a truncated reply with an unsupported command. */
+    if ((dev->result.ioError == 0 || dev->result.ioError == HFERR_BadStatus) &&
+        dev->result.status == 2 && dev->result.senseValid &&
+        dev->result.senseKey == 5 && dev->result.ascq == 0 &&
+        (dev->result.asc == 0x20 || dev->result.asc == 0x24)) {
+        dev->linkInfoUnsupported = 1;
+        return swlsUnsupported;
+    }
+    return swlsError;
+}
 
 // not ideal but couldn't get the compiler to give me __lmodu and __ldivu
 // I'm sure someone who knows what they're doing can do this much better :)
@@ -490,10 +534,10 @@ SCSIWIFIDevice SCSIWifi_open(struct SCSIDevice_OpenData* openData, enum SCSIWifi
         dev->Cmd.scsi_Length = INQUIRE_BUFFER_SIZE;        
         dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-        DoIO( (struct IORequest*)dev->SCSIReq );  
+        runCommand(dev);
 
         // Failed
-        if (dev->Cmd.scsi_Status) {
+        if (dev->result.ioError || dev->Cmd.scsi_Status) {
             *errorCode = sworInquireFail;
             FreeVec(tmpBuffer);
             _SCSIWifi_close(dev);
@@ -547,10 +591,10 @@ LONG SCSIWifi_scan(SCSIWIFIDevice device, enum SCSIWifi_ScanStatus* status) {
     dev->Cmd.scsi_Length = 4;                       // NEEDS to be 4
     dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq );   
+    runCommand(dev);
 
     // Failed
-    if (dev->Cmd.scsi_Status) return 0;
+    if (dev->result.ioError || dev->Cmd.scsi_Status) return 0;
 
     // Check the result
     if (dev->Cmd.scsi_Actual == 1) {
@@ -575,10 +619,10 @@ LONG SCSIWifi_scanComplete(SCSIWIFIDevice device, enum SCSIWifi_ScanStatus* stat
     dev->Cmd.scsi_Length = 4;                       // NEEDS to be 4
     dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq );   
+    runCommand(dev);
 
     // Failed
-    if (dev->Cmd.scsi_Status) return 0;
+    if (dev->result.ioError || dev->Cmd.scsi_Status) return 0;
 
     // Check the result
     if (dev->Cmd.scsi_Actual == 1) {
@@ -603,10 +647,10 @@ LONG SCSIWifi_getScanResults(SCSIWIFIDevice device, struct SCSIWifi_ScanResults*
     dev->Cmd.scsi_Length = sizeof(struct SCSIWifi_ScanResults);       
     dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq );   
+    runCommand(dev);
 
     // Failed
-    if (dev->Cmd.scsi_Status) return 0;
+    if (dev->result.ioError || dev->Cmd.scsi_Status) return 0;
 
     // Check the result - the format exactly matches the struct we're supplying
     if (dev->Cmd.scsi_Actual >= 2) {
@@ -632,9 +676,9 @@ LONG SCSIWifi_enable(SCSIWIFIDevice device, LONG setEnable) {
     dev->Cmd.scsi_Length = 0;
     dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq ); 
+    runCommand(dev);
 
-    if (dev->Cmd.scsi_Status) return 0;
+    if (dev->result.ioError || dev->Cmd.scsi_Status) return 0;
 
     return 1;
 }
@@ -650,9 +694,9 @@ LONG SCSIWifi_getMACAddress(SCSIWIFIDevice device, struct SCSIWifi_MACAddress* m
     dev->Cmd.scsi_Length = 6;
     dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq );   
+    runCommand(dev);
 
-    if (!dev->Cmd.scsi_Status && dev->Cmd.scsi_Actual == 6) {
+    if (!dev->result.ioError && !dev->Cmd.scsi_Status && dev->Cmd.scsi_Actual == 6) {
         memcpy(macAddress->address, &dev->scsiCommand[6], 6);
         macAddress->valid = 1;
         return 1;
@@ -670,9 +714,9 @@ LONG SCSIWifi_getMACAddress(SCSIWIFIDevice device, struct SCSIWifi_MACAddress* m
         dev->Cmd.scsi_Length = sizeof(statWords);
         dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-        DoIO( (struct IORequest*)dev->SCSIReq );
+        runCommand(dev);
 
-        if (!dev->Cmd.scsi_Status && dev->Cmd.scsi_Actual >= 6) {
+        if (!dev->result.ioError && !dev->Cmd.scsi_Status && dev->Cmd.scsi_Actual >= 6) {
             memcpy(macAddress->address, statWords, 6);
             macAddress->valid = 1;
             return 1;
@@ -694,9 +738,10 @@ LONG SCSIWifi_joinNetwork(SCSIWIFIDevice device, struct SCSIWifi_JoinRequest* wi
     dev->Cmd.scsi_Length = sizeof(struct SCSIWifi_JoinRequest);         
     dev->Cmd.scsi_Flags = SCSIF_WRITE | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq );   
+    runCommand(dev);
 
-    if (dev->Cmd.scsi_Status) return 0;
+    if (dev->result.ioError || dev->Cmd.scsi_Status ||
+        dev->Cmd.scsi_Actual != dev->Cmd.scsi_Length) return 0;
     
     return 1;
 }
@@ -718,9 +763,9 @@ LONG SCSIWifi_getNetwork(SCSIWIFIDevice device, struct SCSIWifi_NetworkEntry* co
     dev->Cmd.scsi_Length = sizeof(struct SCSIWifi_NetworkEntry) + 2;   
     dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq );   
+    runCommand(dev);
 
-    if (dev->Cmd.scsi_Status) return 0;
+    if (dev->result.ioError || dev->Cmd.scsi_Status) return 0;
 
     // Check the result
     if (dev->Cmd.scsi_Actual > 2) {
@@ -750,10 +795,11 @@ LONG SCSIWifi_addMulticastAddress(SCSIWIFIDevice device, struct SCSIWifi_MACAddr
     dev->Cmd.scsi_Length = 6;
     dev->Cmd.scsi_Flags = SCSIF_WRITE | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq );  
+    runCommand(dev);
 
     LONG ret = 1;
-    if (dev->Cmd.scsi_Status) ret = 0;    
+    if (dev->result.ioError || dev->Cmd.scsi_Status ||
+        dev->Cmd.scsi_Actual != dev->Cmd.scsi_Length) ret = 0;
     
     return ret;
 }
@@ -767,9 +813,10 @@ LONG SCSIWifi_sendFrame(SCSIWIFIDevice device, UBYTE* packet, UWORD packetSize) 
     dev->Cmd.scsi_Length = packetSize;
     dev->Cmd.scsi_Flags = SCSIF_WRITE | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq );     
+    runCommand(dev);
 
-    if (dev->Cmd.scsi_Status) return 0;
+    if (dev->result.ioError || dev->Cmd.scsi_Status ||
+        dev->Cmd.scsi_Actual != dev->Cmd.scsi_Length) return 0;
     return 1;
 }
 
@@ -804,9 +851,9 @@ LONG SCSIWifi_receiveFrame(SCSIWIFIDevice device, UBYTE* packetBuffer, UWORD pac
     dev->Cmd.scsi_Length = packetSize;
     dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq ); 
+    runCommand(dev);
 
-    if ((dev->Cmd.scsi_Status) || (dev->Cmd.scsi_Actual < 6)) return 0;
+    if (dev->result.ioError || (dev->Cmd.scsi_Status) || (dev->Cmd.scsi_Actual < 6)) return 0;
 
     return dev->Cmd.scsi_Actual;
 }
@@ -824,9 +871,9 @@ LONG SCSIWifi_getDeviceInfo(SCSIWIFIDevice device, struct SCSIWifi_DeviceInfo* d
     dev->Cmd.scsi_Length = 12;
     dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 		
-    DoIO( (struct IORequest*)dev->SCSIReq );   
+    runCommand(dev);
 
-    if (dev->Cmd.scsi_Status) return 0;
+    if (dev->result.ioError || dev->Cmd.scsi_Status) return 0;
 
     if (dev->Cmd.scsi_Actual == 12) {
         memcpy(devInfo->macAddress, &result[6], 6);
@@ -853,9 +900,10 @@ LONG SCSIWifi_AmigaNetSendFrames(SCSIWIFIDevice device, UBYTE* packets, USHORT t
     dev->Cmd.scsi_Length = totalSize;
     dev->Cmd.scsi_Flags = SCSIF_WRITE | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq );     
+    runCommand(dev);
 
-    if (dev->Cmd.scsi_Status) return 0;
+    if (dev->result.ioError || dev->Cmd.scsi_Status ||
+        dev->Cmd.scsi_Actual != dev->Cmd.scsi_Length) return 0;
     return 1;
 }
 
@@ -889,9 +937,9 @@ LONG SCSIWifi_AmigaNetRecvFrames(SCSIWIFIDevice device, UBYTE* packetBuffer, UWO
     dev->Cmd.scsi_Length = bufferSize;
     dev->Cmd.scsi_Flags = SCSIF_READ | SCSIF_AUTOSENSE;
 
-    DoIO( (struct IORequest*)dev->SCSIReq ); 
+    runCommand(dev);
 
-    if ((dev->Cmd.scsi_Status) || (dev->Cmd.scsi_Actual < 4)) return 0;
+    if (dev->result.ioError || (dev->Cmd.scsi_Status) || (dev->Cmd.scsi_Actual < 4)) return 0;
 
     return dev->Cmd.scsi_Actual;
 }
